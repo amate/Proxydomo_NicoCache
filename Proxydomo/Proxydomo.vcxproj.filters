@@ -180,7 +180,12 @@
     <ClCompile Include="UITranslator.cpp">
       <Filter>Header Files</Filter>
     </ClCompile>
-    <ClCompile Include="ssl.cpp">
+    <ClCompile Include="ConnectionMonitor.cpp">
+      <Filter>Header Files\Window</Filter>
+    </ClCompile>
+    <ClCompile Include="NicoCacheManager.cpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
       <Filter>Header Files</Filter>
     </ClCompile>
     <ClCompile Include="ConnectionMonitor.cpp">
@@ -387,6 +392,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="format.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="NicoCacheManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ssl.h">

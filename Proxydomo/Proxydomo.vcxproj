@@ -260,6 +260,7 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="Misc.cpp" />
+    <ClCompile Include="NicoCacheManager.cpp" />
     <ClCompile Include="Nodes_.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
@@ -520,6 +521,7 @@
     <ClInclude Include="MainDlg.h" />
     <ClInclude Include="Matcher.h" />
     <ClInclude Include="Misc.h" />
+    <ClInclude Include="NicoCacheManager.h" />
     <ClInclude Include="Node.h" />
     <ClInclude Include="Nodes.h" />
     <ClInclude Include="OptionDialog.h" />
@@ -761,4 +763,9 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <ProjectExtensions>
+    <VisualStudio>
+      <UserProperties RESOURCE_FILE="Proxydomo.rc" />
+    </VisualStudio>
+  </ProjectExtensions>
 </Project>

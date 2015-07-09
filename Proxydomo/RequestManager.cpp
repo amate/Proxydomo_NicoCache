@@ -35,7 +35,10 @@
 #include "Matcher.h"
 #include "proximodo\filter.h"
 #include "Logger.h"
-#include "CodeConvert.h"
+#include "NicoCacheManager.h"
+#include "ConnectionMonitor.h"
+using namespace CodeConvert;
+
 #include "ConnectionMonitor.h"
 using namespace CodeConvert;
 
@@ -454,6 +457,13 @@ void CRequestManager::_ProcessOut()
 
 				m_filterOwner.useSettingsProxy = CSettings::s_useRemoteProxy;
 				m_filterOwner.contactHost = m_filterOwner.url.getHostPort();
+
+				if (CNicoCacheManager::IsGetFlvURL(m_filterOwner.url)) {
+					CNicoCacheManager::TrapGetFlv(m_filterOwner, m_psockBrowser);
+					SwitchToInvalid();
+					m_inStep = STEP_FINISH;
+					continue;
+				}
 
 				// Test URL with bypass-URL matcher, if matches we'll bypass all
 				{
