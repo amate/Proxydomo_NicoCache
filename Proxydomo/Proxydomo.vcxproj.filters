@@ -19,6 +19,9 @@
     <Filter Include="Header Files\Window">
       <UniqueIdentifier>{77f0da3b-3a0b-4914-a007-0964fd88071a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\MediaInfo">
+      <UniqueIdentifier>{db8238e7-b688-4827-95ba-41277f9ab3a1}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -186,10 +189,17 @@
     <ClCompile Include="NicoCacheManager.cpp">
       <Filter>Header Files</Filter>
     </ClCompile>
-      <Filter>Header Files</Filter>
-    </ClCompile>
     <ClCompile Include="ConnectionMonitor.cpp">
       <Filter>Header Files\Window</Filter>
+    </ClCompile>
+    <ClCompile Include="ssl.cpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
+    <ClCompile Include="TransactionView.cpp">
+      <Filter>Header Files\Window</Filter>
+    </ClCompile>
+    <ClCompile Include="MediaInfo.cpp">
+      <Filter>Header Files\MediaInfo</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -402,6 +412,12 @@
     </ClInclude>
     <ClInclude Include="ConnectionMonitor.h">
       <Filter>Header Files\Window</Filter>
+    </ClInclude>
+    <ClInclude Include="TransactionView.h">
+      <Filter>Header Files\Window</Filter>
+    </ClInclude>
+    <ClInclude Include="MediaInfo.h">
+      <Filter>Header Files\MediaInfo</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

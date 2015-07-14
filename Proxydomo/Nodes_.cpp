@@ -33,6 +33,7 @@
 #include "Settings.h"
 #include "CodeConvert.h"
 #include "AppConst.h"
+#include "NicoCacheManager.h"
 //#include <unicode\uchar.h>
 
 using namespace CodeConvert;
@@ -1380,6 +1381,22 @@ const UChar* CNode_Command::match(const UChar* start, const UChar* stop, MatchDa
             filter.locked = false;
         }
         break;
+
+	case CMD_ASSOCIATE:
+	{
+		std::string smNumber = UTF8fromUTF16(filter.memoryTable[1].getValue());
+		std::wstring title = filter.memoryTable[2].getValue();
+		CNicoCacheManager::Associate_smNumberTitle(smNumber, title);
+	}
+	break;
+
+	case CMD_REGISTER:
+	{
+		std::string movieURL = UTF8fromUTF16(CExpander::expand(filter.memoryTable[0].getValue(), filter));
+		std::string smNumber = UTF8fromUTF16(filter.memoryTable[1].getValue());;
+		CNicoCacheManager::Associate_movieURL_smNumber(movieURL, smNumber);
+	}
+	break;
 
 	default:
 		ATLASSERT(FALSE);
