@@ -35,7 +35,8 @@
 #include "Logger.h"
 #include "ssl.h"
 #include "UITranslator.h"
-
+#include "NicoCacheManager.h"
+#include "MediaInfo.h"
 
 // ÉOÉçÅ[ÉoÉãïœêî
 CAppModule _Module;
@@ -107,7 +108,13 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPTSTR lp
 
 		CSettings::s_SSLFilter = InitSSL();
 
+		CNicoCacheManager::CreateNicoConnectionFrame();
+
+		InitMediaInfo();
+
 		nRet = Run(lpstrCmdLine, nCmdShow);
+
+		CNicoCacheManager::CloseAllConnection();
 
 		if (CSettings::s_SSLFilter)
 			TermSSL();
@@ -118,6 +125,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPTSTR lp
 	}
 	catch (std::exception& e) {
 		ERROR_LOG << e.what();
+	}
+	catch (...) {
+		ERROR_LOG << L"etc exception!";
 	}
 
 	FreeLibrary(hRich);

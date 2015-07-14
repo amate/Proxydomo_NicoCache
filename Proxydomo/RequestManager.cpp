@@ -37,9 +37,7 @@
 #include "Logger.h"
 #include "NicoCacheManager.h"
 #include "ConnectionMonitor.h"
-using namespace CodeConvert;
-
-#include "ConnectionMonitor.h"
+#include "CodeConvert.h"
 using namespace CodeConvert;
 
 #define CR	'\r'
@@ -456,13 +454,6 @@ void CRequestManager::_ProcessOut()
 				m_filterOwner.useSettingsProxy = CSettings::s_useRemoteProxy;
 				m_filterOwner.contactHost = m_filterOwner.url.getHostPort();
 
-				if (CNicoCacheManager::IsGetFlvURL(m_filterOwner.url)) {
-					CNicoCacheManager::TrapGetFlv(m_filterOwner, m_psockBrowser);
-					SwitchToInvalid();
-					m_inStep = STEP_FINISH;
-					continue;
-				}
-
 				// Test URL with bypass-URL matcher, if matches we'll bypass all
 				{
 					CFilter filter(m_filterOwner);
@@ -490,6 +481,25 @@ void CRequestManager::_ProcessOut()
 				// We'll work on a copy, since we don't want to alter
 				// the real headers that $IHDR and $OHDR may access
 				m_filterOwner.outHeadersFiltered = m_filterOwner.outHeaders;
+
+				if (CNicoCacheManager::IsGetFlvURL(m_filterOwner.url)) {
+					CNicoCacheManager::TrapGetFlv(m_filterOwner, m_psockBrowser.get());
+					SwitchToInvalid();
+					m_outStep = STEP::STEP_FINISH;
+					continue;
+
+				} else if (CNicoCacheManager::IsMovieURL(m_filterOwner.url)) {
+					CNicoCacheManager::ManageMovieCache(m_filterOwner, m_psockBrowser);
+					SwitchToInvalid();
+					m_outStep = STEP::STEP_FINISH;
+					continue;
+
+				} else if (CNicoCacheManager::IsThumbURL(m_filterOwner.url)) {
+					CNicoCacheManager::ManageThumbCache(m_filterOwner, m_psockBrowser);
+					m_outStep = STEP::STEP_FINISH;
+					m_inStep = STEP::STEP_FINISH;
+					continue;
+				}
 
 				// Filter outgoing headers
 				if (m_filterOwner.bypassOut == false && CSettings::s_filterOut &&

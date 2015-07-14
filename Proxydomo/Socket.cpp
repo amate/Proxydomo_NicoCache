@@ -356,11 +356,18 @@ bool	CSocket::Write(const char* buffer, int length)
 	m_nLastWriteCount = 0;
 	ATLASSERT( length > 0 );
 	int ret = 0;
-
+	int trycount = 0;
+	enum { kMaxRetryCount = 200 };
 	for (;;) {
 		ret = ::send(m_sock, buffer, length, 0);
 		int wsaError = ::WSAGetLastError();
 		if (ret == SOCKET_ERROR && wsaError == WSAEWOULDBLOCK && m_writeStop == false) {
+			++trycount;
+			if (kMaxRetryCount < trycount) {
+				ERROR_LOG << L"CSocket::Write : max retry";
+				break;
+			}
+
 			::Sleep(10);
 		} else {
 			break;

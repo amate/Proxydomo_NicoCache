@@ -26,15 +26,15 @@
 /// アプリケーションの名前
 #ifndef _DEBUG
 	#ifndef _WIN64
-	#define	APP_NAME	_T("Proxydomo")
+	#define	APP_NAME	_T("Proxydomo_NicoCache")
 	#else
-	#define APP_NAME	_T("Proxydomo64")
+	#define APP_NAME	_T("Proxydomo64_NicoCache")
 	#endif
 #else
 	#ifndef _WIN64
-	#define APP_NAME	_T("Proxydomo_debug")
+	#define APP_NAME	_T("Proxydomo_NicoCache_debug")
 	#else
-	#define APP_NAME	_T("Proxydomo64_debug")
+	#define APP_NAME	_T("Proxydomo64_NicoCache_debug")
 	#endif
 #endif
 

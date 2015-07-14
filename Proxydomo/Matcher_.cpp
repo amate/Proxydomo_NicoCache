@@ -1045,36 +1045,42 @@ CNode* CMatcher::code(StringCharacterIterator& patternIt)
                 }
                 return new CNode_Nest(left, middle, right, command == L"INEST");
 
-            } else if (command == L"ASK") {
+			} else if (command == L"ASK") {
 
-                // Command to automate the insertion of an item in one of 2 lists
-                size_t colon = content.find(L',');
-                if (colon == string::npos)
+				// Command to automate the insertion of an item in one of 2 lists
+				size_t colon = content.find(L',');
+				if (colon == string::npos)
 					throw parsing_exception(ID_PARSINGERROR_MISSING_COMMA, 0);
-                std::wstring allowName = content.substr(0, colon);
-                content.erase(0, colon + 1);
-                colon = content.find(L',');
-                if (colon == string::npos)
+				std::wstring allowName = content.substr(0, colon);
+				content.erase(0, colon + 1);
+				colon = content.find(L',');
+				if (colon == string::npos)
 					throw parsing_exception(ID_PARSINGERROR_MISSING_COMMA, 0);
-                std::wstring denyName = content.substr(0, colon);
-                content.erase(0, colon + 1);
-                colon = findParamEnd(content, L',');
-                if (colon == string::npos)
+				std::wstring denyName = content.substr(0, colon);
+				content.erase(0, colon + 1);
+				colon = findParamEnd(content, L',');
+				if (colon == string::npos)
 					throw parsing_exception(ID_PARSINGERROR_MISSING_COMMA, 0);
-                std::wstring question = content.substr(0, colon);
-                std::wstring item = content.substr(colon + 1);
-                std::wstring pattern = L"\\h\\p\\q\\a";
-                colon = findParamEnd(item, L',');
-                if (colon != string::npos) {
-                    pattern = item.substr(colon + 1);
-                    item = item.substr(0, colon);
-                }
-                CUtil::trim(allowName);
-                CUtil::trim(denyName);
-                CUtil::trim(question);
-                CUtil::trim(item);
-                CUtil::trim(pattern);
-                return new CNode_Ask(/*filter, */allowName, denyName, question, item, pattern);
+				std::wstring question = content.substr(0, colon);
+				std::wstring item = content.substr(colon + 1);
+				std::wstring pattern = L"\\h\\p\\q\\a";
+				colon = findParamEnd(item, L',');
+				if (colon != string::npos) {
+					pattern = item.substr(colon + 1);
+					item = item.substr(0, colon);
+				}
+				CUtil::trim(allowName);
+				CUtil::trim(denyName);
+				CUtil::trim(question);
+				CUtil::trim(item);
+				CUtil::trim(pattern);
+				return new CNode_Ask(/*filter, */allowName, denyName, question, item, pattern);
+
+			} else if (command == L"ASSOCIATE") {
+				return new CNode_Command(CMD_ASSOCIATE, L"", L"");
+
+			} else if (command == L"REGISTER") {
+				return new CNode_Command(CMD_REGISTER, L"", L"");
 
             } else {
 
