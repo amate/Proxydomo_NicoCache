@@ -1082,7 +1082,10 @@ CNode* CMatcher::code(StringCharacterIterator& patternIt)
 			} else if (command == L"REGISTER") {
 				return new CNode_Command(CMD_REGISTER, L"", L"");
 
-            } else {
+			} else if (command == L"FAILFOUND") {
+				return new CNode_Command(CMD_FAILFOUND, L"", L"");
+
+			} else {
 
                 // Unknown command
 				throw parsing_exception(ID_PARSINGERROR_UNKNOWN_COMMAND, -1);

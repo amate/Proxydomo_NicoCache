@@ -23,6 +23,8 @@ std::unique_ptr<VideoInfo>	GetVideoInfo(const std::wstring& filePath)
 	videoInfo->width = std::stoi(MI.Get(Stream_Video, 0, _T("Width")).c_str());
 	videoInfo->height = std::stoi(MI.Get(Stream_Video, 0, _T("Height")).c_str());
 
+	videoInfo->fps = std::stof(MI.Get(Stream_Video, 0, _T("FrameRate")));
+
 	videoInfo->formatProfile = MI.Get(Stream_Video, 0, _T("Format_Profile"));
 
 	videoInfo->ref_frames = std::stoi(MI.Get(Stream_Video, 0, _T("Format_Settings_RefFrames")));
@@ -47,7 +49,7 @@ void InitMediaInfo()
 	auto videoInfo = std::make_unique<VideoInfo>();
 
 	MediaInfo MI;
-	if (MI.Open(L"D:\\Program\\Proxydomo with NicoCache\\Debug\\nico_cache\\sm26672100org_月刊TAS動画ランキング 2015年6月号.mp4") == 0)
+	if (MI.Open(L"D:\\Program\\Proxydomo with NicoCache\\Debug\\nico_cache\\sm26701432_　いまさらながらのゆかりさんとゆっくりのsplatoon実況.mp4") == 0)
 		return;
 
 	videoInfo->width = std::stoi(MI.Get(Stream_Video, 0, _T("Width")).c_str());
@@ -66,5 +68,6 @@ void InitMediaInfo()
 	} else {
 		videoInfo->weightb = 0;
 	}
+
 #endif
 }

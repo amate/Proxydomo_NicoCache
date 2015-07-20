@@ -11,6 +11,7 @@ struct VideoInfo
 {
 	int	width;
 	int height;
+	float fps;
 
 	std::wstring formatProfile;
 	int ref_frames;

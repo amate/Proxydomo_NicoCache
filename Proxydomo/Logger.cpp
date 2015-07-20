@@ -87,7 +87,7 @@ BOOST_LOG_GLOBAL_LOGGER_INIT(my_logger, logger_t)
 
 	logging::core::get()->set_filter
 		(
-#ifdef _DEBUG
+#if 1
 		logging::trivial::severity >= logging::trivial::info
 #else
 		logging::trivial::severity >= logging::trivial::warning

@@ -419,6 +419,12 @@
     <ClInclude Include="MediaInfo.h">
       <Filter>Header Files\MediaInfo</Filter>
     </ClInclude>
+    <ClInclude Include="ptreeWrapper.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="timer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Proxydomo.rc">

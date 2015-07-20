@@ -1398,6 +1398,13 @@ const UChar* CNode_Command::match(const UChar* start, const UChar* stop, MatchDa
 	}
 	break;
 
+	case CMD_FAILFOUND:
+	{
+		std::string smNumber = UTF8fromUTF16(filter.memoryTable[1].getValue());
+		filter.memoryTable[0](CNicoCacheManager::FailFound(smNumber));
+	}
+	break;
+
 	default:
 		ATLASSERT(FALSE);
     
