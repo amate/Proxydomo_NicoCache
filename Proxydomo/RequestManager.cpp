@@ -501,6 +501,17 @@ void CRequestManager::_ProcessOut()
 					m_outStep = STEP::STEP_FINISH;
 					m_inStep = STEP::STEP_FINISH;
 					continue;
+
+				} else if (CNicoCacheManager::IsNicoCacheServerRequest(m_filterOwner.url)) {
+					CNicoCacheManager::ManageNicoCacheServer(m_filterOwner, m_psockBrowser);
+					m_outStep = STEP::STEP_FINISH;
+					m_inStep = STEP::STEP_FINISH;
+					continue;
+
+				} else if (CNicoCacheManager::ManagePostCache(m_filterOwner, m_psockBrowser, m_recvOutBuf)) {
+					m_outStep = STEP::STEP_FINISH;
+					m_inStep = STEP::STEP_FINISH;
+					continue;
 				}
 
 				// Filter outgoing headers

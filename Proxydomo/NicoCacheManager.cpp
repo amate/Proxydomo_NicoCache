@@ -7,6 +7,7 @@
 #include <regex>
 #include <fstream>
 #include <chrono>
+#include <strstream>
 #include <boost\format.hpp>
 #include <Mmsystem.h>
 #pragma comment(lib, "Winmm.lib")
@@ -16,6 +17,8 @@
 #include "Misc.h"
 #include "CodeConvert.h"
 #include "MediaInfo.h"
+#include "ptreeWrapper.h"
+#include "timer.h"
 
 using namespace CodeConvert;
 using namespace std::chrono;
@@ -97,6 +100,7 @@ namespace {
 		strName = CUtil::replaceAll(strName, L"|", L"｜");
 
 		strName = CUtil::replaceAll(strName, L"&amp;", L"&");
+		strName = CUtil::replaceAll(strName, L"&quot;", L"'");
 	}
 
 	std::unique_ptr<CSocket> ConnectWebsite(const std::string& contactHost)
@@ -163,6 +167,7 @@ namespace {
 		}
 		catch (std::exception& e) {
 			ERROR_LOG << L"WriteSocketBuffer : " << e.what();
+			throw;
 		}
 	}
 
@@ -285,6 +290,64 @@ namespace {
 		}
 		return std::move(buffer);
 	}
+
+	std::string GetHTTPPage(CFilterOwner& filterOwner)
+	{
+		// サイトへ接続	
+		auto sockWebsite = ConnectWebsite(UTF8fromUTF16(filterOwner.url.getHostPort()));
+
+		// 送信ヘッダを編集
+		auto outHeadersFiltered = filterOwner.outHeaders;
+
+		if (CUtil::noCaseContains(L"Keep-Alive", CFilterOwner::GetHeader(outHeadersFiltered, L"Proxy-Connection"))) {
+			CFilterOwner::RemoveHeader(outHeadersFiltered, L"Proxy-Connection");
+			CFilterOwner::SetHeader(outHeadersFiltered, L"Connection", L"Keep-Alive");
+		}
+
+		std::string sendOutBuf = "GET " + UTF8fromUTF16(filterOwner.url.getAfterHost()) + " HTTP/1.1" CRLF;
+		for (auto& pair : outHeadersFiltered)
+			sendOutBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+		sendOutBuf += CRLF;
+
+		// GET リクエストを送信
+		if (sockWebsite->Write(sendOutBuf.c_str(), sendOutBuf.length()) == false) {
+			throw std::runtime_error("sockWebsite write error");
+		}
+
+		// HTTP Header を受信する
+		std::string buffer;
+		GetHTTPHeader(filterOwner, sockWebsite.get(), buffer);
+		std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
+
+		std::wstring contentEncoding = filterOwner.GetInHeader(L"Content-Encoding");
+		if (CUtil::noCaseContains(L"gzip", contentEncoding)) {
+			filterOwner.RemoveInHeader(L"Content-Encoding");
+			CZlibBuffer decompressor;
+			decompressor.reset(false, true);
+
+			decompressor.feed(body);
+			decompressor.read(body);
+
+			filterOwner.SetInHeader(L"Content-Length", std::to_wstring(body.length()));
+		}			
+		sockWebsite->Close();
+		return body;
+	}
+
+	std::string SendHTTPResponse(CFilterOwner& filterOwner, const std::string& body, CSocket* sockBrowser)
+	{
+		std::string sendInBuf = "HTTP/1.1 " + filterOwner.responseLine.code + " " + filterOwner.responseLine.msg + CRLF;
+		for (auto& pair : filterOwner.inHeaders)
+			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+		sendInBuf += CRLF;
+		sendInBuf += body;
+
+		// レスポンスを送信
+		auto sock = std::unique_ptr<CSocket>(std::move(sockBrowser));
+		WriteSocketBuffer(sock, sendInBuf.c_str(), sendInBuf.length());
+		sockBrowser = sock.release();
+		return sendInBuf;
+	};
 
 	// ファイル内容を読み込み
 	std::string LoadFile(const std::wstring& filePath)
@@ -442,89 +505,6 @@ namespace {
 	};
 
 
-	bool	VideoConveter(const std::string& smNumber, const std::wstring& filePath)
-	{
-		enum { kMaxReFrames = 5, kBadweightb = 2 };
-		auto videoInfo = GetVideoInfo(filePath);
-		if (videoInfo == nullptr) {
-			ATLASSERT(FALSE);
-			return false;
-		}
-
-		CSize resolution;
-		resolution.cx = videoInfo->width;
-		resolution.cy = videoInfo->height;
-
-		//int bit = std::atoi(result.str(3).c_str());
-		auto atPos = videoInfo->formatProfile.find(L'@');
-		ATLASSERT(atPos != std::wstring::npos);
-
-		std::wstring profile = videoInfo->formatProfile.substr(0, atPos);
-		std::wstring level = videoInfo->formatProfile.substr(atPos + 2);
-
-		INFO_LOG << L"VideoConveter : " << smNumber 
-				<< L" formatProfile : " << videoInfo->formatProfile << L" ref_frames : " << videoInfo->ref_frames;
-
-		if ((profile == L"High" && level[0] == '5') || 
-			(kMaxReFrames <= videoInfo->ref_frames && videoInfo->weightb == kBadweightb) ) 
-		{
-			// 960x640 iPhone4S 解像度
-			CSize destResolution = resolution;
-			if (destResolution.cx > 960) {
-				int destY = (960 * destResolution.cy) / destResolution.cx;
-				if ((destY % 4) != 0) {	// 4の倍数になるよう調節する
-					destY -= destY % 4;
-				}
-				destResolution.cx = 960;
-				destResolution.cy = destY;
-			}
-
-			std::thread([smNumber, filePath, destResolution]() {
-				CString qsvEncPath = Misc::GetExeDirectory() + _T("QSVEncC\\x64\\QSVEncC64.exe");
-				std::wstring title = CNicoCacheManager::Get_smNumberTitle(smNumber);
-				std::wstring outPath = GetCacheFolderPath() + UTF16fromUTF8(smNumber) + L"enc_" + title + L".mp4";
-				CString commandLine = 
-					(boost::wformat(L"--avqsv --copy-audio --cqp 30 --quality 1 --output-res %1%x%2% -i \"%3%\" -o \"%4%\"") 
-										% destResolution.cx % destResolution.cy % filePath % outPath).str().c_str();
-				STARTUPINFO startUpInfo = { sizeof(STARTUPINFO) };
-				PROCESS_INFORMATION processInfo = {};
-
-				INFO_LOG << L"VideoConveter EncStart : " << smNumber << L" commandLine : " << (LPCWSTR)commandLine;
-
-				BOOL bRet = ::CreateProcess(qsvEncPath, (LPWSTR)(LPCWSTR)commandLine, 
-											nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, nullptr, &startUpInfo, &processInfo);
-				ATLASSERT(bRet);
-				::WaitForSingleObject(processInfo.hProcess, INFINITE);
-				::CloseHandle(processInfo.hThread);
-				::CloseHandle(processInfo.hProcess);
-
-				std::wstring backupPath = GetCacheFolderPath() + UTF16fromUTF8(smNumber) + L"org_" + title + L".mp4";
-				bRet = ::MoveFile(filePath.c_str(), backupPath.c_str());
-				if (bRet) {
-					bRet = ::MoveFile(outPath.c_str(), filePath.c_str());
-					if (bRet) {
-						// 完了！
-						INFO_LOG << L"VideoConveter EncFinish! : " << smNumber;
-
-						CString SEpath = Misc::GetExeDirectory() + _T("宝箱出現.wav");
-						ATLVERIFY(::PlaySound(SEpath, NULL, SND_FILENAME | SND_SYNC));
-
-					} else {
-						ERROR_LOG << L"MoveFile failed : src : " << outPath << L" dest : " << filePath;
-					}					
-				} else {
-					ERROR_LOG << L"MoveFile failed : src : " << filePath << L" dest : " << backupPath;
-				}
-
-
-			}).detach();
-
-			return true;
-		} else {
-			return false;
-		}
-	}
-
 }	// namespace
 
 
@@ -545,9 +525,10 @@ void	CNicoMovieCacheManager::StartThread(
 
 	manager->NewBrowserConnection(filterOwner, std::move(sockBrowser));
 
-	CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
-	CNicoCacheManager::s_mapsmNumberCacheManager.emplace_front(
+	//CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
+	auto result = CNicoCacheManager::s_mapsmNumberCacheManager.emplace_front(
 								std::make_pair(smNumber, std::unique_ptr<CNicoMovieCacheManager>(std::move(manager))));
+	ATLASSERT(result.second);
 	manager->m_thisThread = std::thread([manager]() {
 
 		try {
@@ -559,11 +540,14 @@ void	CNicoMovieCacheManager::StartThread(
 
 		manager->m_thisThread.detach();
 
-		CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
-		auto& list = CNicoCacheManager::s_mapsmNumberCacheManager.get<CNicoCacheManager::hash>();
-		auto it = list.find(manager->smNumber());
-		ATLASSERT(it != list.end());
-		list.erase(it);
+		CCritSecLock lock(CNicoCacheManager::s_cssmNumberCacheManager);
+		auto& mapList = CNicoCacheManager::s_mapsmNumberCacheManager.get<CNicoCacheManager::hash>();
+		auto it = mapList.find(manager->m_smNumber);
+		if (it == mapList.end()) {
+			ATLASSERT(FALSE);
+			return;
+		}
+		mapList.erase(it);
 	});
 }
 
@@ -579,9 +563,10 @@ void	CNicoMovieCacheManager::StartThread(const std::string& smNumber, const Nico
 
 	manager->m_optNicoRequestData = nicoRequestData;
 
-	CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
-	CNicoCacheManager::s_mapsmNumberCacheManager.emplace_front(
+	//CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
+	auto result = CNicoCacheManager::s_mapsmNumberCacheManager.emplace_front(
 		std::make_pair(smNumber, std::unique_ptr<CNicoMovieCacheManager>(std::move(manager))));
+	ATLASSERT(result.second);
 	manager->m_thisThread = std::thread([manager]() {
 
 		try {
@@ -593,11 +578,14 @@ void	CNicoMovieCacheManager::StartThread(const std::string& smNumber, const Nico
 
 		manager->m_thisThread.detach();
 
-		CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
-		auto& list = CNicoCacheManager::s_mapsmNumberCacheManager.get<CNicoCacheManager::hash>();
-		auto it = list.find(manager->smNumber());
-		ATLASSERT(it != list.end());
-		list.erase(it);
+		CCritSecLock lock(CNicoCacheManager::s_cssmNumberCacheManager);
+		auto& mapList = CNicoCacheManager::s_mapsmNumberCacheManager.get<CNicoCacheManager::hash>();
+		auto it = mapList.find(manager->m_smNumber);
+		if (it == mapList.end()) {
+			ATLASSERT(FALSE);
+			return;
+		}
+		mapList.erase(it);
 	});
 }
 
@@ -863,6 +851,7 @@ void CNicoMovieCacheManager::Manage()
 	}
 
 	bool debugSizeCheck = false;
+	bool isAddDLedList = false;
 	steady_clock::time_point lastTime;
 	for (;;) {
 		{
@@ -903,14 +892,20 @@ void CNicoMovieCacheManager::Manage()
 
 						cacheFileManager.MoveFileIncompleteToComplete();
 
-						if (bLowRequest == false) {
-							if (VideoConveter(m_smNumber, cacheFileManager.CompleteCachePath())) {
+						if (bLowRequest == false || m_bReserveVideoConvert) {
+							if (CNicoCacheManager::VideoConveter(m_smNumber, cacheFileManager.CompleteCachePath(), m_bReserveVideoConvert)) {
 								CCritSecLock lock(m_transactionData->csData);
 								m_transactionData->detailText = _T("エンコードを開始します。");
 								++m_transactionData->lastDLPos;
 							}
 						}
 					}
+					{
+						CCritSecLock lock(m_transactionData->csData);
+						m_transactionData->detailText = L"ダウンロードを完了しました！";
+					}
+					CNicoCacheManager::AddDLedNicoCacheManager(m_smNumber, m_transactionData);
+					isAddDLedList = true;
 					CNicoCacheManager::ConsumeDLQue();
 				}
 			}
@@ -918,6 +913,18 @@ void CNicoMovieCacheManager::Manage()
 			if (debugSizeCheck == false) {
 				if (m_movieCacheBuffer.size() != m_movieSize) {
 					ERROR_LOG << L"サイトとの接続が切れたが、ファイルをすべてDLできませんでした...";
+				}
+				if (isAddDLedList == false) {
+					{
+						CCritSecLock lock(m_transactionData->csData);
+						if (m_movieCacheBuffer.size() != m_movieSize) {
+							m_transactionData->detailText = L"サイトとの接続が切れたが、ファイルをすべてDLできませんでした...";
+						} else {
+							m_transactionData->detailText = L"ダウンロードを完了しました！";
+						}
+					}
+					CNicoCacheManager::AddDLedNicoCacheManager(m_smNumber, m_transactionData);
+					isAddDLedList = true;
 				}
 			}
 			debugSizeCheck = true;
@@ -1005,7 +1012,7 @@ void CNicoMovieCacheManager::Manage()
 
 			::Sleep(50);
 		}
-	}
+	}	// for(;;)
 
 	CNicoCacheManager::DestroyTransactionData(m_transactionData);
 
@@ -1026,6 +1033,26 @@ CCriticalSection	CNicoCacheManager::s_cssmNumberDLQue;
 CNicoCacheManager::QueContainer	CNicoCacheManager::s_smNumberDLQue;
 
 std::unique_ptr<CNicoConnectionFrame>	CNicoCacheManager::s_nicoConnectionFrame;
+
+CCriticalSection CNicoCacheManager::s_csvecDLedNicoCacheManager;
+std::list<DLedNicoCache> CNicoCacheManager::s_vecDLedNicoCacheManager;
+
+CCriticalSection CNicoCacheManager::s_csvideoConvertList;
+std::list<VideoConvertItem> CNicoCacheManager::s_videoConvertList;
+
+
+CCriticalSection CNicoCacheManager::s_csCacheGetThumbInfo;
+std::pair<std::string, std::string> CNicoCacheManager::s_cacheGetThumbInfo;
+
+CCriticalSection CNicoCacheManager::s_csCacheWatchPage;
+std::pair<std::string, std::string> CNicoCacheManager::s_cacheWatchPage;
+
+CCriticalSection CNicoCacheManager::s_csCacheGetflv;
+std::pair<std::string, std::string> CNicoCacheManager::s_cacheGetflv;
+
+CCriticalSection CNicoCacheManager::s_csCacheCommentList;
+std::pair<std::string, NicoCommentList> CNicoCacheManager::s_cacheCommentList;
+
 
 
 void CNicoCacheManager::CreateNicoConnectionFrame()
@@ -1087,60 +1114,46 @@ void CNicoCacheManager::TrapGetFlv(CFilterOwner& filterOwner, CSocket* sockBrows
 {
 	try {
 		std::string query = UTF8fromUTF16(filterOwner.url.getQuery());
-		std::string smNumber = query.substr(3);	// ?v=smXXX
-
-		// サイトへ接続
-		auto sockWebsite = ConnectWebsite(UTF8fromUTF16(filterOwner.contactHost));
-
-		if (CUtil::noCaseContains(L"Keep-Alive", CFilterOwner::GetHeader(filterOwner.outHeaders, L"Proxy-Connection"))) {
-			CFilterOwner::RemoveHeader(filterOwner.outHeaders, L"Proxy-Connection");
-			CFilterOwner::SetHeader(filterOwner.outHeaders, L"Connection", L"Keep-Alive");
+		std::string smNumber;
+		if (query.length() > 0) {
+			smNumber = query.substr(3);	// ?v=smXXX
+		} else {
+			std::string url = UTF8fromUTF16(filterOwner.url.getUrl());
+			auto slashPos = url.rfind('/');
+			ATLASSERT(slashPos != std::string::npos);
+			smNumber = url.substr(slashPos + 1);
 		}
 
-		std::string sendOutBuf = "GET " + UTF8fromUTF16(filterOwner.url.getAfterHost()) + " HTTP/1.1" CRLF;
-		for (auto& pair : filterOwner.outHeaders)
-			sendOutBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendOutBuf += CRLF;
+		CCritSecLock lock(s_csCacheGetflv);
+		if (s_cacheGetflv.first != smNumber) {
 
-		// GET リクエストを送信
-		if (sockWebsite->Write(sendOutBuf.c_str(), sendOutBuf.length()) == false)
-			throw std::runtime_error("sockWebsite write error");
+			std::string body = GetHTTPPage(filterOwner);
+			if (filterOwner.responseLine.code != "200")
+				throw std::runtime_error("responseCode not 200 : " + filterOwner.responseCode);
 
-		// HTTP Header を受信する
-		std::string buffer;
-		GetHTTPHeader(filterOwner, sockWebsite.get(), buffer);
+			std::string sendInBuf = SendHTTPResponse(filterOwner, body, sockBrowser);
 
-		std::string sendInBuf = "HTTP/1.1 " + filterOwner.responseLine.code + " " + filterOwner.responseLine.msg + CRLF;
-		std::string name;
-		for (auto& pair : filterOwner.inHeaders)
-			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendInBuf += CRLF;
+			// movieURL を取得
+			std::string escBody = CUtil::UESC(body);
+			std::regex rx("url=([^&]+)");
+			std::smatch result;
+			if (std::regex_search(escBody, result, rx) == false)
+				throw std::runtime_error("url not found");
 
-		// HTTP Header を送信
-		if (sockBrowser->Write(sendInBuf.c_str(), sendInBuf.length()) == false)
-			throw std::runtime_error("sockBrowser write error");
+			std::string movieURL = result.str(1);
+			INFO_LOG << L"smNumber : " << smNumber << L" movieURL : " << movieURL;
 
-		// Body を受信
-		std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
-		sockWebsite->Close();
-		if (filterOwner.responseLine.code != "200")
-			throw std::runtime_error("responseCode not 200 : " + filterOwner.responseCode);
+			Associate_movieURL_smNumber(movieURL, smNumber);
 
-		// Body を送信
-		if (sockBrowser->Write(body.c_str(), body.length()) == false)
-			throw std::runtime_error("sockBrowser write error");
+			s_cacheGetflv.first = smNumber;
+			s_cacheGetflv.second = sendInBuf;
 
-		// movieURL を取得
-		std::string escBody = CUtil::UESC(body);
-		std::regex rx("url=([^&]+)");
-		std::smatch result;
-		if (std::regex_search(escBody, result, rx) == false)
-			throw std::runtime_error("url not found");
-
-		std::string movieURL = result.str(1);
-		INFO_LOG << L"smNumber : " << smNumber << L" movieURL : " << movieURL;
-
-		Associate_movieURL_smNumber(movieURL, smNumber);
+		} else {
+			auto sock = std::unique_ptr<CSocket>(std::move(sockBrowser));
+			WriteSocketBuffer(sock, s_cacheGetflv.second.c_str(), s_cacheGetflv.second.length());
+			sockBrowser = sock.release();
+			INFO_LOG << smNumber << L" Send CacheGetflv";
+		}
 	}
 	catch (std::exception& e) {
 		WARN_LOG << L"CNicoCacheManager::TrapGetFlv : " << e.what();
@@ -1171,7 +1184,10 @@ bool CNicoCacheManager::IsMovieURL(const CUrl& url)
 	if (it != hashList.end()) {
 		return true;
 	} else {
-		ATLASSERT(url.getUrl().find(L"nicovideo.jp/smile") == std::wstring::npos);
+		//ATLASSERT(url.getUrl().find(L"nicovideo.jp/smile") == std::wstring::npos);
+		if (url.getUrl().find(L"nicovideo.jp/smile") != std::wstring::npos) {
+			ERROR_LOG << L"movieURL trap failed : " << url.getUrl();
+		}
 		return false;
 	}
 }
@@ -1214,7 +1230,6 @@ void CNicoCacheManager::ManageMovieCache(CFilterOwner& filterOwner, std::unique_
 				}
 			}
 		}
-		lock2.Unlock();
 
 		{	// キューに入っていれば削除する
 			CCritSecLock lock3(s_cssmNumberDLQue);
@@ -1278,6 +1293,82 @@ std::string CNicoCacheManager::Get_smNumberMovieURL(const std::string& smNumber)
 
 }
 
+extern const std::wstring kGetThumbInfoURL;
+
+std::wstring CNicoCacheManager::FailFound(const std::string& smNumber)
+{
+	std::wstring requestThumbInfoURL = kGetThumbInfoURL + UTF16fromUTF8(smNumber);
+
+	CFilterOwner filterOwner;
+	filterOwner.url.parseUrl(requestThumbInfoURL);
+	filterOwner.SetOutHeader(L"Host", filterOwner.url.getHost());
+
+	std::string thumbInfoBody = GetHTTPPage(filterOwner);
+	if (thumbInfoBody.empty()) {
+		ERROR_LOG << L"FailFound fail : thumbInfoBody empty";
+		return L"";
+	}
+
+	auto thumbInfoTree = ptreeWrapper::BuildPtreeFromText(UTF16fromUTF8(thumbInfoBody));
+	auto& thumbTree = thumbInfoTree.get_child(L"nicovideo_thumb_response.thumb");
+
+	using boost::property_tree::wptree;
+	wptree videoInfoTree;
+
+	wptree videoTree;
+	videoTree.add(L"id", thumbTree.get<std::wstring>(L"video_id"));
+	videoTree.add(L"user_id", thumbTree.get<std::wstring>(L"user_id"));
+	videoTree.add(L"deleted", L"0");
+	videoTree.add(L"description", thumbTree.get<std::wstring>(L"description"));
+	std::wstring length = thumbTree.get<std::wstring>(L"length");
+	std::wregex rx(L"(\\d+):(\\d+)");
+	std::wsmatch result;
+	if (std::regex_match(length, result, rx) == false) {
+		ERROR_LOG << L"FailFound fail : length no rx match";
+		return L"";
+	}
+	int min = std::stoi(result.str(1));
+	int sec = std::stoi(result.str(2));
+	int length_in_seconds = min * 60 + sec;
+	videoTree.add(L"length_in_seconds", std::to_wstring(length_in_seconds));
+	videoTree.add(L"thumbnail_url", thumbTree.get<std::wstring>(L"thumbnail_url"));
+	videoTree.add(L"upload_time", thumbTree.get<std::wstring>(L"first_retrieve"));	// none
+	videoTree.add(L"first_retrieve", thumbTree.get<std::wstring>(L"first_retrieve"));
+	videoTree.add(L"view_counter", thumbTree.get<std::wstring>(L"view_counter"));
+	videoTree.add(L"mylist_counter", thumbTree.get<std::wstring>(L"mylist_counter"));
+	videoTree.add(L"option_flag_community", L"0");	// none
+	videoTree.add(L"option_flag_nicowari", L"0");	// none
+	videoTree.add(L"option_flag_middle_thumbnail", L"1");	// none
+
+	videoTree.add(L"options.<xmlattr>.adult", L"0");	// none
+	videoTree.add(L"options.<xmlattr>.large_thumbnail", L"1");	// none
+	videoTree.add(L"options.<xmlattr>.sun", L"0");	// none
+	videoTree.add(L"options.<xmlattr>.mobile", L"0");	// none
+
+	videoInfoTree.add_child(L"video", videoTree);
+
+	auto& thumbTagsTree = thumbTree.get_child(L"tags");
+	std::wstring domain = thumbTree.get<std::wstring>(L"tags.<xmlattr>.domain");
+	wptree tagsTree;
+	for (auto& tag : thumbTagsTree) {
+		if (tag.first == L"tag") {
+			wptree tag_info;
+			tag_info.add(L"tag", tag.second.get_value<std::wstring>());
+			tag_info.add(L"area", domain);
+			tagsTree.add_child(L"tag_info", tag_info);
+		}
+	}
+	videoInfoTree.add_child(L"tags", tagsTree);
+
+	std::wstringstream ss;
+	boost::property_tree::write_xml(ss, videoInfoTree);
+	std::wstring videoInfoContent = ss.str();
+	std::wregex rx2(L"<\\?xml[^>]+>\n");
+	videoInfoContent = std::regex_replace(videoInfoContent, rx2, L"", std::regex_constants::format_first_only);
+	return videoInfoContent;
+}
+
+
 void CNicoCacheManager::AddDLQue(const std::string& smNumber, const NicoRequestData& nicoRequestData)
 {
 	CCritSecLock lock(s_cssmNumberDLQue);
@@ -1298,6 +1389,7 @@ void CNicoCacheManager::ConsumeDLQue()
 	lock.Unlock();
 
 	INFO_LOG << L"CNicoCacheManager::ConsumeDLQue : " << requestData.first;
+	CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
 	CNicoMovieCacheManager::StartThread(requestData.first, requestData.second);
 }
 
@@ -1401,11 +1493,27 @@ void CNicoCacheManager::ManageThumbCache(CFilterOwner& filterOwner, std::unique_
 
 		// HTTP Header を送信
 		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
+		std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
+		if (body.length() > 0) {
+			WriteSocketBuffer(sockBrowser, body.c_str(), body.length());
+		}
 
 		INFO_LOG << L"Send code[" << filterOwner.responseLine.code << "] : " << number;
 
 	} else {
 		std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
+		if (body.empty()) {
+			std::string sendInBuf = "HTTP/1.1 404 Not Found" CRLF;
+			for (auto& pair : filterOwner.inHeaders)
+				sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+			sendInBuf += CRLF;
+
+			// HTTP Header を送信
+			WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
+
+			INFO_LOG << L"Send body empty" << number;
+			return;
+		}
 		funcSendThumb(body);
 
 		if (bIncomplete == false) {
@@ -1427,7 +1535,654 @@ void CNicoCacheManager::ManageThumbCache(CFilterOwner& filterOwner, std::unique_
 }
 
 
+void CNicoCacheManager::AddDLedNicoCacheManager(const std::string& smNumber, std::shared_ptr<TransactionData> transData)
+{	
+	CCritSecLock lock2(s_csvecDLedNicoCacheManager);
+	CCritSecLock lock3(transData->csData);
+	s_vecDLedNicoCacheManager.emplace_front(transData->name, smNumber, (LPCWSTR)transData->detailText);
+}
 
+
+const std::wstring kNicoCacheServerURL = L"http://local.ptron/nicocache/nicocache_api";
+
+bool CNicoCacheManager::IsNicoCacheServerRequest(const CUrl& url)
+{
+	if (url.getUrl().compare(0, kNicoCacheServerURL.length(), kNicoCacheServerURL) != 0)
+		return false;
+
+	return true;
+}
+
+void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::unique_ptr<CSocket>& sockBrowser)
+{
+	
+
+
+
+	std::wstring query = filterOwner.url.getQuery();
+	auto pos = query.find(L"videoConvert_smNumber=");
+	if (pos != std::wstring::npos) {
+		std::string convert_smNumber = UTF8fromUTF16(query.substr(pos + wcslen(L"videoConvert_smNumber=")));
+		ATLASSERT(convert_smNumber.length());
+
+		std::wstring filePath = Get_smNumberFilePath(convert_smNumber);
+		CString ext = Misc::GetFileExt(filePath.c_str());
+		ext.MakeLower();
+		if (filePath.length() > 0 && ext != L"incomplete") {
+			VideoConveter(convert_smNumber, filePath, true);
+
+		} else {
+			CCritSecLock lock(s_cssmNumberCacheManager);
+			auto& hashList = s_mapsmNumberCacheManager.get<hash>();
+			auto it = hashList.find(convert_smNumber);
+			ATLASSERT(it != hashList.end());
+			if (it == hashList.end()) {
+				ERROR_LOG << L"manager not found : " << convert_smNumber;
+			} else {
+				it->second->ReserveVideoConvert();
+			}
+		}
+
+		std::string sendBody = "VideoConvert request complete!";
+		std::string sendInBuf;
+		sendInBuf = "HTTP/1.1 200 OK" CRLF;
+
+		HeadPairList inHeader;
+		CFilterOwner::SetHeader(inHeader, L"Content-Type", L"text/html");
+		CFilterOwner::SetHeader(inHeader, L"Content-Length", std::to_wstring(sendBody.size()));
+		CFilterOwner::SetHeader(inHeader, L"Connection", L"keep-alive");
+
+		for (auto& pair : inHeader)
+			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+		sendInBuf += CRLF;
+
+		// HTTP Header を送信
+		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
+
+		// Body を送信
+		WriteSocketBuffer(sockBrowser, sendBody.c_str(), sendBody.length());
+
+	} else {
+		std::wstring json;
+		json = L"{";
+		{
+			json += L"\"DLingItems\": [";
+			CCritSecLock lock(s_cssmNumberCacheManager);
+			auto& list = s_mapsmNumberCacheManager.get<seq>();
+			for (auto it = s_mapsmNumberCacheManager.begin(); it != s_mapsmNumberCacheManager.end(); ++it) {
+				auto& pair = *it;
+				auto transData = pair.second->m_transactionData;
+				CCritSecLock lock2(transData->csData);
+				json += L"{";
+				json += L"\"name\": \"" + transData->name + L"\",";
+				json += L"\"smNumber\": \"" + UTF16fromUTF8(pair.first) + L"\",";
+				int progress = static_cast<int>((static_cast<double>(transData->lastDLPos) / static_cast<double>(transData->fileSize)) * 100.0);
+				json += L"\"progress\": " + std::to_wstring(progress) + L",";
+				json += L"\"description\": \"" + transData->detailText + L"\"";
+				json += L"}";
+				if (std::next(it) != s_mapsmNumberCacheManager.end()) {
+					json += L",";
+				}
+			}
+			json += L"], ";
+		}
+		{
+			json += L"\"VideoConvertItems\": [";
+			CCritSecLock lock(s_csvideoConvertList);
+			for (auto it = s_videoConvertList.begin(); it != s_videoConvertList.end(); ++it) {
+				auto& convertItem = *it;
+				json += L"{";
+				json += L"\"name\": \"" + convertItem.name + L"\",";
+				json += L"\"progress\": \"" + convertItem.progress + L"\"";
+				json += L"}";
+				if (std::next(it) != s_videoConvertList.end()) {
+					json += L",";
+				}
+			}
+			json += L"], ";
+		}
+		{
+			json += L"\"DLedItems\": [";
+			CCritSecLock lock(s_csvecDLedNicoCacheManager);
+			for (auto it = s_vecDLedNicoCacheManager.begin(); it != s_vecDLedNicoCacheManager.end(); ++it) {
+				auto& DLedData = *it;
+
+				json += L"{";
+				json += L"\"name\": \"" + DLedData.name + L"\",";
+				json += L"\"smNumber\": \"" + UTF16fromUTF8(DLedData.smNumber) + L"\",";
+				json += L"\"description\": \"" + DLedData.description + L"\"";
+				json += L"}";
+				if (std::next(it) != s_vecDLedNicoCacheManager.end()) {
+					json += L",";
+				}
+			}
+			json += L"]";
+		}
+		json += L"}";
+
+		std::string sendBody = UTF8fromUTF16(json);
+
+		std::string sendInBuf;
+		sendInBuf = "HTTP/1.1 200 OK" CRLF;
+
+		HeadPairList inHeader;
+		CFilterOwner::SetHeader(inHeader, L"Content-Type", L"application/json; charset=utf-8");
+		CFilterOwner::SetHeader(inHeader, L"Content-Length", std::to_wstring(sendBody.size()));
+		CFilterOwner::SetHeader(inHeader, L"Connection", L"keep-alive");
+
+		for (auto& pair : inHeader)
+			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+		sendInBuf += CRLF;
+
+		// HTTP Header を送信
+		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
+
+		// Body を送信
+		WriteSocketBuffer(sockBrowser, sendBody.c_str(), sendBody.length());
+	}
+}
+
+
+bool	CNicoCacheManager::VideoConveter(const std::string& smNumber, const std::wstring& filePath, bool bForceConvert /*= false*/)
+{
+	auto videoInfo = GetVideoInfo(filePath);
+	if (videoInfo == nullptr) {
+		ATLASSERT(FALSE);
+		return false;
+	}
+
+	CSize resolution;
+	resolution.cx = videoInfo->width;
+	resolution.cy = videoInfo->height;
+
+	//int bit = std::atoi(result.str(3).c_str());
+	auto atPos = videoInfo->formatProfile.find(L'@');
+	ATLASSERT(atPos != std::wstring::npos);
+
+	std::wstring profile = videoInfo->formatProfile.substr(0, atPos);
+	std::wstring level = videoInfo->formatProfile.substr(atPos + 2);
+
+	INFO_LOG << L"VideoConveter : " << smNumber
+		<< L" formatProfile : " << videoInfo->formatProfile << L" ref_frames : " << videoInfo->ref_frames;
+
+	auto funcIsNeedConvert = [&]() -> bool {
+#if 0
+		// 参照フレームが6以上 かつ 解像度が 1280x720以上 なら必ずコンバートする
+		// sm26706342_【Minecraft】 こつこつクラフト+ G Part1 【弦巻マキ実況】
+		if (6 < videoInfo->ref_frames && (1280 <= videoInfo->width && 720 <= videoInfo->height))
+			return true;
+#endif
+
+		// level 5 かつ fpsが 30 以上なら
+		if (level[0] == L'5' && 30.0 < videoInfo->fps) {
+			return true;
+		}
+
+		// 1280x720 以下で参照フレームが9以下なら大丈夫？
+		if ((videoInfo->width <= 1280 && videoInfo->height <= 720) && videoInfo->ref_frames <= 9) {
+			return false;
+		}
+#if 0
+		// sm26702656_【7 Days to Die】やることは後から考えよう！Part2 の設定？ 最初のあたりで止まってしまう
+		enum { kMaxReFrames = 5, kBadweightb = 2 };
+		if (kMaxReFrames <= videoInfo->ref_frames && videoInfo->weightb == kBadweightb) {
+			return true;
+		}
+#endif		
+		return false;
+	};
+
+	if (funcIsNeedConvert() || bForceConvert) {
+
+		CCritSecLock lock(s_csvideoConvertList);
+		std::wstring name = (LPCWSTR)Misc::GetFileBaseNoExt(filePath.c_str());
+		s_videoConvertList.emplace_front(name);
+		auto itThis = s_videoConvertList.begin();
+		lock.Unlock();
+
+		// 960x640 iPhone4S 解像度
+		CSize destResolution = resolution;
+		if (destResolution.cx > 960) {
+			int destY = (960 * destResolution.cy) / destResolution.cx;
+			if ((destY % 4) != 0) {	// 4の倍数になるよう調節する
+				destY -= destY % 4;
+			}
+			destResolution.cx = 960;
+			destResolution.cy = destY;
+		}
+
+		std::thread([smNumber, filePath, destResolution, name, itThis]() {
+			try {
+				CHandle hReadPipe;
+				CHandle hWritePipe;
+				if (!::CreatePipe(&hReadPipe.m_h, &hWritePipe.m_h, nullptr, 0))
+					throw std::runtime_error("CreatePipe failed");
+
+				CHandle hStdOutput;
+				if (!::DuplicateHandle(GetCurrentProcess(), hWritePipe, GetCurrentProcess(), &hStdOutput.m_h, 0, TRUE, DUPLICATE_SAME_ACCESS))
+					throw std::runtime_error("DuplicateHandle failed");
+
+				hWritePipe.Close();
+
+				CString qsvEncPath = Misc::GetExeDirectory() + _T("QSVEncC\\x64\\QSVEncC64.exe");
+				std::wstring title = CNicoCacheManager::Get_smNumberTitle(smNumber);
+				std::wstring outPath = GetCacheFolderPath() + UTF16fromUTF8(smNumber) + L"enc_" + title + L".mp4";
+				CString commandLine =
+					(boost::wformat(L"--avqsv --copy-audio --cqp 30 --quality 1 --i-adapt --b-adapt --output-res %1%x%2% -i \"%3%\" -o \"%4%\"")
+					% destResolution.cx % destResolution.cy % filePath % outPath).str().c_str();
+				STARTUPINFO startUpInfo = { sizeof(STARTUPINFO) };
+				startUpInfo.dwFlags = STARTF_USESTDHANDLES;
+				//startUpInfo.hStdOutput = hStdOutput;
+				startUpInfo.hStdError = hStdOutput;
+				PROCESS_INFORMATION processInfo = {};
+
+				INFO_LOG << L"VideoConveter EncStart : " << smNumber << L" commandLine : " << (LPCWSTR)commandLine;
+
+				BOOL bRet = ::CreateProcess(qsvEncPath, (LPWSTR)(LPCWSTR)commandLine,
+					nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startUpInfo, &processInfo);
+				//BOOL bRet = ::CreateProcess(_T("C:\\Windows\\System32\\ipconfig.exe"), nullptr,
+				//	nullptr, nullptr, TRUE, CREATE_NEW_CONSOLE, nullptr, nullptr, &startUpInfo, &processInfo);
+				ATLASSERT(bRet);
+
+				hStdOutput.Close();
+
+				std::string outresult;
+
+				for (;;) {
+					enum { kBufferSize = 512 };
+					char buffer[kBufferSize + 1] = "";
+					DWORD readSize = 0;
+					bRet = ::ReadFile(hReadPipe, (LPVOID)buffer, kBufferSize, &readSize, nullptr);
+					if (bRet && readSize == 0)  { // EOF
+						break;
+					}
+
+					if (bRet == 0) {
+						DWORD err = ::GetLastError();
+						if (err == ERROR_BROKEN_PIPE) {
+							break;
+						}
+					}
+					outresult.append(buffer, readSize);
+
+					for (;;) {
+						auto nPos = outresult.find_first_of("\r\n");
+						if (nPos != std::string::npos) {
+							std::string line = outresult.substr(0, nPos);
+							outresult.erase(0, nPos + 1);
+
+							if (line.length() > 0 && line[0] == '[') {
+								auto closePos = line.find(']');
+								if (closePos != std::string::npos) {
+									std::string progress = line.substr(1, closePos - 1);
+									//INFO_LOG << L"VideoConvert progress : " << progress;
+									CCritSecLock lock(itThis->csData);
+									itThis->progress = UTF16fromUTF8(progress);
+								}
+							}
+						} else {
+							break;
+						}
+					}
+				}
+
+				hReadPipe.Close();
+
+				::WaitForSingleObject(processInfo.hProcess, INFINITE);
+				::CloseHandle(processInfo.hThread);
+				::CloseHandle(processInfo.hProcess);
+
+				std::ifstream fs(outPath, std::ios::in | std::ios::binary);
+				if (!fs)
+					throw std::runtime_error("outPath open failed");
+
+				fs.seekg(0, std::ios::end);
+				streamoff fileSize = fs.tellg();
+				fs.close();
+
+				bool bSuccess = false;
+				if (fileSize == 0) {
+					::DeleteFile(outPath.c_str());
+					ERROR_LOG << L"VideoConveter Encode failed";
+
+				} else {
+					std::wstring backupPath = GetCacheFolderPath() + UTF16fromUTF8(smNumber) + L"org_" + title + L".mp4";
+					bRet = ::MoveFileEx(filePath.c_str(), backupPath.c_str(), MOVEFILE_REPLACE_EXISTING);
+					if (bRet) {
+						bRet = ::MoveFileEx(outPath.c_str(), filePath.c_str(), MOVEFILE_REPLACE_EXISTING);
+						if (bRet) {
+							// 完了！
+							INFO_LOG << L"VideoConveter EncFinish! : " << smNumber;
+							bSuccess = true;
+
+							{
+								CCritSecLock lock2(s_cssmNumberCacheManager);
+								auto& list = s_mapsmNumberCacheManager.get<hash>();
+								auto it = list.find(smNumber);
+								if (it != list.end()) {
+									it->second->SwitchToInvalid();
+								}
+							}
+							CString SEpath = Misc::GetExeDirectory() + _T("宝箱出現.wav");
+							ATLVERIFY(::PlaySound(SEpath, NULL, SND_FILENAME | SND_ASYNC));
+
+						} else {
+							ERROR_LOG << L"MoveFile failed : src : " << outPath << L" dest : " << filePath;
+						}
+					} else {
+						ERROR_LOG << L"MoveFile failed : src : " << filePath << L" dest : " << backupPath;
+					}
+				}
+				{
+					CCritSecLock lock2(s_csvecDLedNicoCacheManager);
+					s_vecDLedNicoCacheManager.emplace_front(name, smNumber,
+						bSuccess ? L"動画の変換を完了しました。！" : L"動画の変換に失敗しました...");
+				}
+				{
+					CCritSecLock lock(s_csvideoConvertList);
+					s_videoConvertList.erase(itThis);
+				}
+			}
+			catch (std::exception& e) {
+				ERROR_LOG << L"VideoConvertThread exception : " << e.what();
+			}
+		}).detach();
+
+		return true;
+	} else {
+		return false;
+	}
+}
+
+
+
+const std::wstring kGetThumbInfoURL = L"http://ext.nicovideo.jp/api/getthumbinfo/";
+const std::wstring kWatchPageURL = L"http://www.nicovideo.jp/watch/";
+const std::wstring ksoWatchPageURL = L"http://www.nicovideo.jp/watch/so";
+const std::wstring kmsgServerURL = L"http://msg.nicovideo.jp/";
+const std::wstring kiNicovideoURL = L"http://i.nicovideo.jp/v3/video.array";
+
+bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_ptr<CSocket>& sockBrowser, std::string& recvOutBuf)
+{
+	if (filterOwner.url.getUrl().compare(0, kGetThumbInfoURL.length(), kGetThumbInfoURL) == 0) {
+		// http://ext.nicovideo.jp/api/getthumbinfo/ をハンドルする
+		std::string smNumber = UTF8fromUTF16(filterOwner.url.getUrl().substr(kGetThumbInfoURL.length()));
+
+		CCritSecLock lock(s_csCacheGetThumbInfo);
+		if (s_cacheGetThumbInfo.first != smNumber) {
+
+			std::string body = GetHTTPPage(filterOwner);
+			std::string sendInBuf = SendHTTPResponse(filterOwner, body, sockBrowser.get());
+
+			s_cacheGetThumbInfo.first = smNumber;
+			s_cacheGetThumbInfo.second = sendInBuf;
+
+		} else {
+			// レスポンスを送信
+			WriteSocketBuffer(sockBrowser, s_cacheGetThumbInfo.second.c_str(), s_cacheGetThumbInfo.second.length());
+			INFO_LOG << smNumber << L" Send CacheThumbInfo";
+		}
+		return true;
+	} else if (filterOwner.url.getUrl().compare(0, kWatchPageURL.length(), kWatchPageURL) == 0) {
+		// http://www.nicovideo.jp/watch/xxx をハンドルする
+		if (filterOwner.url.getQuery() != L"?watch_harmful=1") {
+			return false;	// iNicoからではない
+		}
+		if (filterOwner.url.getUrl().compare(0, ksoWatchPageURL.length(), ksoWatchPageURL) == 0) {
+			return false;	// watch/soXXX
+		}
+
+		auto quesPos = filterOwner.url.getUrl().find(L"?watch_harmful=1");
+		std::string smNumber = UTF8fromUTF16(filterOwner.url.getUrl().substr(kWatchPageURL.length(), quesPos - kWatchPageURL.length()));
+
+		CCritSecLock lock(s_csCacheWatchPage);
+		if (s_cacheWatchPage.first != smNumber) {
+			std::string body = GetHTTPPage(filterOwner);
+
+			std::wstring utf16body = UTF16fromUTF8(body);
+			std::wregex rx(L"<p id=\"video_title\"><!-- google_ad_section_start -->([^<]+)<!-- google_ad_section_end -->");
+			std::wsmatch result;
+			if (std::regex_search(utf16body, result, rx)) {
+				std::wstring title = result.str(1);
+				Associate_smNumberTitle(smNumber, title);
+			} else {
+				ATLASSERT(FALSE);
+			}
+			std::string sendInBuf = SendHTTPResponse(filterOwner, body, sockBrowser.get());
+
+			s_cacheWatchPage.first = smNumber;
+			s_cacheWatchPage.second = sendInBuf;
+
+		} else {
+			// レスポンスを送信
+			WriteSocketBuffer(sockBrowser, s_cacheWatchPage.second.c_str(), s_cacheWatchPage.second.length());
+			INFO_LOG << smNumber << L" Send CacheWatchPage";
+		}
+		return true;
+
+	} else if (filterOwner.url.getUrl().compare(0, kiNicovideoURL.length(), kiNicovideoURL) == 0) {
+		// 動画読み込み時にコメントキャッシュをクリアしておく
+		CCritSecLock lock(s_csCacheCommentList);
+		s_cacheCommentList.first.clear();
+		s_cacheCommentList.second.inHeaders.clear();
+		s_cacheCommentList.second.commentListBody.clear();
+		s_cacheCommentList.second.inOwnerHeaders.clear();
+		s_cacheCommentList.second.commentListOwnerBody.clear();
+		return false;
+
+	} else if (filterOwner.url.getUrl().compare(0, kmsgServerURL.length(), kmsgServerURL) == 0) {
+		// メッセージサーバーとの通信をハンドルする
+		std::wstring contentLength = filterOwner.GetOutHeader(L"Content-Length");
+		if (contentLength.empty()) {
+			return false;
+		}
+
+		timer timer;
+
+		// POSTデータの中身を読みだす
+		int64_t postSize = boost::lexical_cast<int64_t>(contentLength);
+		if (recvOutBuf.size() != postSize) {
+			for (;;) {
+				bool bRead = ReadSocketBuffer(sockBrowser.get(), recvOutBuf);
+				if (bRead == false) {
+					::Sleep(50);
+				}
+				if (recvOutBuf.size() == postSize)
+					break;
+
+				if (sockBrowser->IsConnected() == false)
+					throw std::runtime_error("sockBrowser connection close");
+			}
+		}
+		std::wstring postBody = UTF16fromUTF8(recvOutBuf);
+		INFO_LOG << L"#" << filterOwner.requestNumber << L" Post Body : " << postBody;
+
+		std::regex rx("thread=\"(\\d+)\"");
+		std::smatch result;
+		if (std::regex_search(recvOutBuf, result, rx) == false) {
+			ERROR_LOG << L"no thread number";
+			throw std::runtime_error("no thread number");
+		}
+
+		// コメント投稿の場合
+		std::wregex rx2(L"<chat [^>]+vpos=\"(\\d+)\"[^>]+>([^<]+)</chat>");
+		std::wsmatch result2;
+		bool bPostComment = false;
+		std::string vpos;
+		std::string comment;
+		if (std::regex_search(postBody, result2, rx2)) {
+			bPostComment = true;
+			vpos = UTF8fromUTF16(result2.str(1));
+			comment = UTF8fromUTF16(result2.str(2));
+		}
+
+		std::string threadNumber = result.str(1);
+		bool bOwnerComment = recvOutBuf.find("fork=\"1\"") != std::string::npos;
+		CCritSecLock lock(s_csCacheCommentList);
+		if (s_cacheCommentList.first != threadNumber) {
+			s_cacheCommentList.second.inHeaders.clear();
+			s_cacheCommentList.second.commentListBody.clear();
+			s_cacheCommentList.second.inOwnerHeaders.clear();
+			s_cacheCommentList.second.commentListOwnerBody.clear();
+			s_cacheCommentList.first = threadNumber;
+
+		} else if (bPostComment == false) {
+			// キャッシュを利用する
+			std::string& body = bOwnerComment ? s_cacheCommentList.second.commentListOwnerBody : s_cacheCommentList.second.commentListBody;
+			if (body.length() > 0) {
+				HeadPairList& inHeaders = bOwnerComment ? s_cacheCommentList.second.inOwnerHeaders : s_cacheCommentList.second.inHeaders;
+				// レスポンスを送信
+				std::string sendInBuf = "HTTP/1.1 200 OK" CRLF;
+				for (auto& pair : inHeaders)
+					sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+				sendInBuf += CRLF;
+
+				WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
+				WriteSocketBuffer(sockBrowser, body.c_str(), body.length());
+
+				INFO_LOG << threadNumber << L" Send CacheComment : ownerComment : " << bOwnerComment;
+				return true;
+			}
+		}
+
+		auto funcPostAndGet = [&](const std::string& postData) -> std::string {
+			// サイトへ接続	
+			auto sockWebsite = ConnectWebsite(UTF8fromUTF16(filterOwner.url.getHostPort()));
+
+			// 送信ヘッダを編集
+			auto outHeadersFiltered = filterOwner.outHeaders;
+
+			if (CUtil::noCaseContains(L"Keep-Alive", CFilterOwner::GetHeader(outHeadersFiltered, L"Proxy-Connection"))) {
+				CFilterOwner::RemoveHeader(outHeadersFiltered, L"Proxy-Connection");
+				CFilterOwner::SetHeader(outHeadersFiltered, L"Connection", L"Keep-Alive");
+			}
+			CFilterOwner::SetHeader(outHeadersFiltered, L"Content-Length", std::to_wstring(postData.length()));
+
+			std::string sendOutBuf = "POST " + UTF8fromUTF16(filterOwner.url.getAfterHost()) + " HTTP/1.1" CRLF;
+			for (auto& pair : outHeadersFiltered)
+				sendOutBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+			sendOutBuf += CRLF;
+
+			// POST リクエストを送信
+			WriteSocketBuffer(sockWebsite, sendOutBuf.c_str(), sendOutBuf.length());
+			WriteSocketBuffer(sockWebsite, postData.c_str(), postData.length());
+
+			// HTTP Header を受信する
+			std::string buffer;
+			GetHTTPHeader(filterOwner, sockWebsite.get(), buffer);
+			std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
+			sockWebsite->Close();
+
+			std::wstring contentEncoding = filterOwner.GetInHeader(L"Content-Encoding");
+			if (CUtil::noCaseContains(L"gzip", contentEncoding)) {
+				filterOwner.RemoveInHeader(L"Content-Encoding");
+				CZlibBuffer decompressor;
+				decompressor.reset(false, true);
+
+				decompressor.feed(body);
+				decompressor.read(body);
+
+				filterOwner.SetInHeader(L"Content-Length", std::to_wstring(body.length()));
+			}
+			return body;
+		};
+
+		std::string body = funcPostAndGet(recvOutBuf);
+
+		//std::wstring utf16body = UTF16fromUTF8(body);
+		//INFO_LOG << L"#" << filterOwner.requestNumber << L" Post Response : " << utf16body;
+
+		// キャッシュを更新する
+		if (bPostComment == false) {
+			std::string& cacheBody = bOwnerComment ? s_cacheCommentList.second.commentListOwnerBody : s_cacheCommentList.second.commentListBody;
+			cacheBody = body;
+			HeadPairList& inHeaders = bOwnerComment ? s_cacheCommentList.second.inOwnerHeaders : s_cacheCommentList.second.inHeaders;
+			inHeaders = filterOwner.inHeaders;
+		}
+
+		// 投稿コメントをコメントキャッシュに反映する
+		if (bPostComment) {
+			/*
+			niconicoのメッセージ(コメント)サーバーのタグや送り方の説明 - 神の味噌汁青海
+			http://blog.goo.ne.jp/hocomodashi/e/3ef374ad09e79ed5c50f3584b3712d61
+
+			status: 投稿ステータス
+
+			0 = SUCCESS(投稿完了)
+			1 = FAILURE(投稿拒否)
+			2 = INVALID_THREAD(スレッドIDがおかしい)
+			3 = INVALID_TICKET(投稿チケットが違う)
+			4 = INVALID_POSTKEY(ポストキーがおかしい or ユーザーIDがおかしい)
+			5 = LOCKED(コメントはブロックされている)
+			6 = READONLY(コメントは書き込めない)
+			8 = TOO_LONG(コメント内容が長すぎる)
+			*/
+			std::wstring utf16body = UTF16fromUTF8(body);
+			auto resultTree = ptreeWrapper::BuildPtreeFromText(utf16body);
+			int status = resultTree.get<int>(L"packet.chat_result.<xmlattr>.status");
+			if (status != 0) {
+				ERROR_LOG << L"Post Comment no status : " << body;
+				if (status == 3) {
+					INFO_LOG << L"status == 3 do retry";
+					std::string retryPostBody = "<thread res_from=\"-1\" version=\"20061206\" scores=\"1\" thread=\"1437311665\" />";
+					std::string retryResult = funcPostAndGet(retryPostBody);
+					if (retryResult.empty()) {
+						ERROR_LOG << L"retry PostAndGet failed";
+					} else {
+						std::wstring utf16RetryResult = UTF16fromUTF8(retryResult);
+						auto retryResultTree = ptreeWrapper::BuildPtreeFromText(utf16RetryResult);
+						std::wstring ticket = retryResultTree.get<std::wstring>(L"packet.thread.<xmlattr>.ticket");
+
+						std::string& commentList = s_cacheCommentList.second.commentListBody;
+						std::string replaceTicket = "ticket=\"" + UTF8fromUTF16(ticket) + "\"";
+						std::regex rx5("ticket=\"[^\"]+\"");
+						commentList = std::regex_replace(commentList, rx5, replaceTicket, std::regex_constants::format_first_only);
+
+						CFilterOwner::SetHeader(s_cacheCommentList.second.inHeaders, L"Content-Length", std::to_wstring(commentList.size()));
+
+						INFO_LOG << L"ticket replaced : " << ticket;
+					}
+				}
+			} else {
+				int no = resultTree.get<int>(L"packet.chat_result.<xmlattr>.no");
+				if (status != 0) {
+					ERROR_LOG << L"Post Comment failed status : " << status;
+
+				} else {
+					std::string& commentList = s_cacheCommentList.second.commentListBody;
+					if (commentList.empty()) {
+						ERROR_LOG << L"no cache comment";
+
+					} else {
+						// コメントリストを更新
+						std::string last_res = "last_res=\"" + std::to_string(no) + "\"";
+						std::regex rx4("last_res=\"\\d+\"");
+						commentList = std::regex_replace(commentList, rx4, last_res, std::regex_constants::format_first_only);
+
+						std::string lastComment = (boost::format("<chat thread=\"%1%\" no=\"%2%\" vpos=\"%3%\" date=\"%4%\" mail=\"184\" user_id=\"test\" anonymity=\"1\">%5%</chat></packet>") % threadNumber % no % vpos % time(nullptr) % comment).str();
+						boost::replace_last(commentList, "</packet>", lastComment);
+
+						CFilterOwner::SetHeader(s_cacheCommentList.second.inHeaders, L"Content-Length", std::to_wstring(commentList.size()));
+					}
+				}
+			}
+		}
+
+		// レスポンスを送信
+		std::string sendInBuf = "HTTP/1.1 " + filterOwner.responseLine.code + " " + filterOwner.responseLine.msg + CRLF;
+		for (auto& pair : filterOwner.inHeaders)
+			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+		sendInBuf += CRLF;
+
+		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
+		WriteSocketBuffer(sockBrowser, body.c_str(), body.length());
+
+		INFO_LOG << L"thread : " << threadNumber << L" postComment : " << bPostComment << L" " << timer.format();
+		return true;
+	}
+
+	return false;
+}
 
 
 

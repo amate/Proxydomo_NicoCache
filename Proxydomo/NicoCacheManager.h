@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <thread>
 #include <list>
+#include <vector>
 #include <atomic>
 #include <boost\multi_index_container.hpp>
 #include <boost\multi_index\sequenced_index.hpp>
@@ -32,8 +33,46 @@ struct NicoRequestData
 	HeadPairList outHeaders;
 };
 
+struct DLedNicoCache
+{
+	std::wstring name;
+	std::string smNumber;
+	std::wstring description;
+
+	DLedNicoCache(const std::wstring& name, const std::string& smNumber, const std::wstring& description) :
+		name(name), smNumber(smNumber), description(description)
+	{}
+};
+
+struct NicoCommentList
+{
+	HeadPairList inHeaders;
+	std::string commentListBody;
+
+	HeadPairList inOwnerHeaders;
+	std::string commentListOwnerBody;
+};
+
+struct VideoConvertItem
+{
+	std::wstring name;
+	std::wstring progress;
+
+	CCriticalSection csData;
+
+	VideoConvertItem(const std::wstring& name) : name(name), progress(L"0%")
+	{}
+};
+
+class CNicoCacheManager;
+
+//////////////////////////////////////////////////////////////
+// CNicoMovieCacheManager
+
 class CNicoMovieCacheManager
 {
+	friend class CNicoCacheManager;
+
 	struct BrowserRangeRequest {
 		bool			bSendResponseHeader;
 		CFilterOwner	filterOwner;
@@ -58,12 +97,22 @@ class CNicoMovieCacheManager
 		}
 	};
 
+	CNicoMovieCacheManager() : m_bReserveVideoConvert(false)
+	{}
+
 public:
+
 	static void	StartThread(const std::string& smNumber, 
 							CFilterOwner& filterOwner, std::unique_ptr<CSocket>&& sockBrowser);
 	static void	StartThread(const std::string& smNumber, const NicoRequestData& nicoRequestData);
 
 	void	NewBrowserConnection(CFilterOwner& filterOwner, std::unique_ptr<CSocket>&& sockBrowser);
+
+	void	ReserveVideoConvert() {	
+		// DL’†‚¶‚á‚È‚«‚á—LŒø‚É‚µ‚Ä‚àˆÓ–¡‚ª‚È‚¢
+		ATLASSERT(m_movieSize > 0 && m_movieSize != m_movieCacheBuffer.size());
+		m_bReserveVideoConvert = true;
+	}
 
 	std::string smNumber() const { return m_smNumber; }
 
@@ -91,14 +140,17 @@ private:
 	std::string		m_movieCacheBuffer;
 	int64_t			m_lastMovieSize;
 
-
 	CCriticalSection	m_csBrowserRangeRequestList;
 	std::list<BrowserRangeRequest>	m_browserRangeRequestList;
 
 	std::shared_ptr<TransactionData>	m_transactionData;
 
+	bool	m_bReserveVideoConvert;
+
 };
 
+//////////////////////////////////////////////////////////////
+// CNicoCacheManager
 
 class CNicoCacheManager
 {
@@ -121,6 +173,8 @@ public:
 	static std::wstring Get_smNumberTitle(const std::string& smNumber);
 	static std::string Get_smNumberMovieURL(const std::string& smNumber);
 
+	static std::wstring FailFound(const std::string& smNumber);
+
 
 	static void AddDLQue(const std::string& smNumber, const NicoRequestData& nicoRequestData);
 	static void ConsumeDLQue();
@@ -130,6 +184,15 @@ public:
 
 	static bool IsThumbURL(const CUrl& url);
 	static void ManageThumbCache(CFilterOwner& filterOwner, std::unique_ptr<CSocket>& sockBrowser);
+
+	static void AddDLedNicoCacheManager(const std::string& smNumber, std::shared_ptr<TransactionData> transData);
+
+	static bool IsNicoCacheServerRequest(const CUrl& url);
+	static void ManageNicoCacheServer(CFilterOwner& filterOwner, std::unique_ptr<CSocket>& sockBrowser);
+
+	static bool	VideoConveter(const std::string& smNumber, const std::wstring& filePath, bool bForceConvert = false);
+
+	static bool ManagePostCache(CFilterOwner& filterOwner, std::unique_ptr<CSocket>& sockBrowser, std::string& recvOutBuf);
 
 private:
 
@@ -186,6 +249,24 @@ private:
 	static CCriticalSection	s_cssmNumberDLQue;
 	static QueContainer	s_smNumberDLQue;
 
+	static CCriticalSection s_csvecDLedNicoCacheManager;
+	static std::list<DLedNicoCache> s_vecDLedNicoCacheManager;
+
+	static CCriticalSection s_csvideoConvertList;
+	static std::list<VideoConvertItem> s_videoConvertList;
+
+
+	static CCriticalSection s_csCacheGetThumbInfo;
+	static std::pair<std::string, std::string> s_cacheGetThumbInfo;
+	
+	static CCriticalSection s_csCacheWatchPage;
+	static std::pair<std::string, std::string> s_cacheWatchPage;
+
+	static CCriticalSection s_csCacheGetflv;
+	static std::pair<std::string, std::string> s_cacheGetflv;
+
+	static CCriticalSection s_csCacheCommentList;
+	static std::pair<std::string, NicoCommentList> s_cacheCommentList;
 };
 
 

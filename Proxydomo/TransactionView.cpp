@@ -126,7 +126,7 @@ void	CTransactionView::_UpdateListInfo()
 
 		CCritSecLock lock2(data.csData);
 
-		if (data.lastDLPos == data.fileSize) {
+		if (data.fileSize != 0 && data.lastDLPos == data.fileSize) {
 			data.detailText = _T("ダウンロードを完了しました！");
 
 		} else if (data.fileSize < data.lastDLPos) {

@@ -24,6 +24,8 @@ Thumbs.db
 *.sbr
 *.opensdf
 *.sdf
+*.psess
+*.vsp
 obj/
 [Rr]elease*/
 _ReSharper*/

@@ -345,6 +345,16 @@ void	CTextBuffer::_decideCharset()
 			if (pConverter2 == nullptr) {
 				err = UErrorCode::U_ZERO_ERROR;
 				pConverter2 = ucnv_open(charaCode.c_str(), &err);
+				if (pConverter2 == nullptr) {
+					auto& pConverter3 = g_mapConverter["UTF-8"];
+					if (pConverter3 == nullptr) {
+						err = UErrorCode::U_ZERO_ERROR;
+						pConverter3 = ucnv_open(charaCode.c_str(), &err);
+					}
+					ATLASSERT(pConverter3);
+					m_pConverter = pConverter3;
+					goto convert2;
+				}
 				ATLASSERT(pConverter2);
 			}
 			m_pConverter = pConverter2;

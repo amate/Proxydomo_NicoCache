@@ -86,7 +86,7 @@
     <LinkIncremental>false</LinkIncremental>
     <OutDir>$(SolutionDir)$(Configuration)$(Platform)\</OutDir>
     <IntDir>$(Configuration)$(Platform)\</IntDir>
-    <TargetName>$(ProjectName)64</TargetName>
+    <TargetName>$(ProjectName)64_NicoCache</TargetName>
     <LibraryPath>$(SolutionDir)libmediainfo_dll\$(Platform)\$(Configuration)\;$(SolutionDir)icu\lib64;$(SolutionDir)zlib\x64\lib;$(VCInstallDir)lib\amd64;$(VCInstallDir)atlmfc\lib\amd64;$(WindowsSDK_LibraryPath_x64);$(LibraryPath)</LibraryPath>
     <IncludePath>$(SolutionDir)wolfssl;$(SolutionDir)icu\include;D:\Program\WTL81_12085\Include;$(SolutionDir)zlib\x64\include;$(IncludePath)</IncludePath>
   </PropertyGroup>
@@ -735,6 +735,7 @@
     </ClInclude>
     <ClInclude Include="proximodo\zlibbuffer.h" />
     <ClInclude Include="Proxy.h" />
+    <ClInclude Include="ptreeWrapper.h" />
     <ClInclude Include="RequestManager.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="Settings.h" />
@@ -743,6 +744,7 @@
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="TextBuffer.h" />
     <ClInclude Include="ThreadPool.h" />
+    <ClInclude Include="timer.h" />
     <ClInclude Include="TransactionView.h" />
     <ClInclude Include="UITranslator.h" />
     <ClInclude Include="VersionControl.h" />
