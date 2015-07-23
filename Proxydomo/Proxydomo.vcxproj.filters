@@ -201,6 +201,9 @@
     <ClCompile Include="MediaInfo.cpp">
       <Filter>Header Files\MediaInfo</Filter>
     </ClCompile>
+    <ClCompile Include="HttpOperate.cpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">
@@ -423,6 +426,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="timer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HttpOperate.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

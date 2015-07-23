@@ -8,6 +8,7 @@
 #include <fstream>
 #include <chrono>
 #include <strstream>
+#include <numeric>
 #include <boost\format.hpp>
 #include <Mmsystem.h>
 #pragma comment(lib, "Winmm.lib")
@@ -19,6 +20,7 @@
 #include "MediaInfo.h"
 #include "ptreeWrapper.h"
 #include "timer.h"
+#include "HttpOperate.h"
 
 using namespace CodeConvert;
 using namespace std::chrono;
@@ -30,13 +32,14 @@ using namespace std::chrono;
 
 namespace {
 
-	enum { kReadBuffSize = 64 * 1024 };
 
+	// 動画を保存するキャッシュフォルダのパスを返す(最後に'\'が付く)
 	std::wstring GetCacheFolderPath()
 	{
 		return std::wstring(Misc::GetExeDirectory() + L"nico_cache\\");
 	}
 
+	// キャッシュフォルダからsmNumberの動画を探してパスを返す
 	std::wstring Get_smNumberFilePath(const std::string& smNumber)
 	{
 		std::wstring searchPath = GetCacheFolderPath() + UTF16fromUTF8(smNumber) + L"*";
@@ -52,11 +55,13 @@ namespace {
 		}
 	}
 
+	// サムネイルキャッシュフォルダのパスを返す(最後に'\'が付く)
 	std::wstring GetThumbCacheFolderPath()
 	{
 		return std::wstring(Misc::GetExeDirectory() + L"nico_cache\\thumb_cache\\");
 	}
 
+	// サムネイルキャッシュフォルダからnumberのファイルを探してパスを返す
 	std::wstring GetThumbCachePath(const std::wstring& number)
 	{
 		std::wstring searchPath = GetThumbCacheFolderPath() + number + L".jpg*";
@@ -72,7 +77,7 @@ namespace {
 		}
 	}
 
-	// 拡張子はつけない
+	// smNumberの保存先へのパスを返す(拡張子はつけない)
 	std::wstring CreateCacheFilePath(const std::string& smNumber, bool bLowReqeust)
 	{
 		std::wstring cachePath = GetCacheFolderPath() + UTF16fromUTF8(smNumber);
@@ -103,252 +108,6 @@ namespace {
 		strName = CUtil::replaceAll(strName, L"&quot;", L"'");
 	}
 
-	std::unique_ptr<CSocket> ConnectWebsite(const std::string& contactHost)
-	{
-		// The host string is composed of host and port
-		std::string name = contactHost;
-		std::string port;
-		size_t colon = name.find(':');
-		if (colon != std::string::npos) {    // (this should always happen)
-			port = name.substr(colon + 1);
-			name = name.substr(0, colon);
-		}
-		if (port.empty())
-			port = "80";
-
-		// Check the host (Hostname() asks the DNS)
-		IPv4Address host;
-		if (name.empty() || host.SetService(port) == false || host.SetHostName(name) == false) {
-			throw std::runtime_error("502 Bad Gateway");
-			// The host address is invalid (or unknown by DNS)
-			// so we won't try a connection.
-			//_FakeResponse("502 Bad Gateway", "./html/error.html");
-			//fakeResponse("502 Bad Gateway", "./html/error.html", true,
-			//             CSettings::ref().getMessage("502_BAD_GATEWAY"),
-			//             name);
-		}
-
-		// Connect
-		auto psockWebsite = std::make_unique<CSocket>();
-		do {
-			if (psockWebsite->Connect(host))
-				break;
-		} while (host.SetNextHost());
-
-		if (psockWebsite->IsConnected() == false) {
-			// Connection failed, warn the browser
-			throw std::runtime_error("502 Bad Gateway");
-			//_FakeResponse("503 Service Unavailable", "./html/error.html");
-			//fakeResponse("503 Service Unavailable", "./html/error.html", true,
-			//             CSettings::ref().getMessage("503_UNAVAILABLE"),
-			//             contactHost);
-		}
-		return psockWebsite;
-	}
-
-	bool ReadSocketBuffer(CSocket* sock, std::string& buffer)
-	{
-		bool bDataReceived = false;
-		char readBuffer[kReadBuffSize];
-		while (sock->IsDataAvailable() && sock->Read(readBuffer, kReadBuffSize)) {
-			int count = sock->GetLastReadCount();
-			if (count == 0)
-				break;
-			buffer.append(readBuffer, count);
-			bDataReceived = true;
-		}
-		return bDataReceived;
-	}
-
-	void WriteSocketBuffer(std::unique_ptr<CSocket>& sock, const char* buffer, int length)
-	{
-		try {
-			sock->Write(buffer, length);
-		}
-		catch (std::exception& e) {
-			ERROR_LOG << L"WriteSocketBuffer : " << e.what();
-			throw;
-		}
-	}
-
-	bool	GetHeaders(std::string& buf, HeadPairList& headers)
-	{
-		for (;;) {
-			// Look for end of line
-			size_t pos, len;
-			if (CUtil::endOfLine(buf, 0, pos, len) == false)
-				return false;	// 改行がないので帰る
-
-			// Check if we reached the empty line
-			if (pos == 0) {
-				buf.erase(0, len);
-				return true;	// 終了
-			}
-
-			// Find the header end
-			while (pos + len >= buf.size()
-				|| buf[pos + len] == ' '
-				|| buf[pos + len] == '\t'
-				)
-			{
-				if (CUtil::endOfLine(buf, pos + len, pos, len) == false)
-					return false;
-			}
-
-			// Record header
-			size_t colon = buf.find(':');
-			if (colon != std::string::npos) {
-				std::wstring name = UTF16fromUTF8(buf.substr(0, colon));
-				std::wstring value = UTF16fromUTF8(buf.substr(colon + 1, pos - colon - 1));
-				CUtil::trim(value);
-				headers.emplace_back(std::move(name), std::move(value));
-			}
-			//log += buf.substr(0, pos + len);
-			buf.erase(0, pos + len);
-		}
-	}
-
-	void GetHTTPHeader(CFilterOwner& filterOwner, CSocket* sock, std::string& buffer)
-	{
-		STEP inStep = STEP::STEP_FIRSTLINE;
-		for (;;) {
-			bool bRead = ReadSocketBuffer(sock, buffer);
-
-			switch (inStep) {
-			case STEP::STEP_FIRSTLINE:
-			{
-				// Do we have the full first line yet?
-				if (buffer.size() < 4)
-					break;
-				// ゴミデータが詰まってるので終わる
-				if (::strncmp(buffer.c_str(), "HTTP", 4) != 0) {
-					buffer.clear();
-					throw std::runtime_error("gomi data");
-				}
-
-				size_t pos, len;
-				if (CUtil::endOfLine(buffer, 0, pos, len) == false)
-					break;		// まだ改行まで読み込んでないので帰る
-
-				// Parse it
-				size_t p1 = buffer.find_first_of(" ");
-				size_t p2 = buffer.find_first_of(" ", p1 + 1);
-				filterOwner.responseLine.ver = buffer.substr(0, p1);
-				filterOwner.responseLine.code = buffer.substr(p1 + 1, p2 - p1 - 1);
-				filterOwner.responseLine.msg = buffer.substr(p2 + 1, pos - p2 - 1);
-				filterOwner.responseCode = buffer.substr(p1 + 1, pos - p1 - 1);
-
-				// Remove it from receive-in buffer.
-				// we don't place it immediately on send-in buffer,
-				// as we may be willing to fake it (cf $REDIR)
-				//m_logResponse = m_recvInBuf.substr(0, pos + len);
-				buffer.erase(0, pos + len);
-
-				// Next step will be to read headers
-				inStep = STEP::STEP_HEADERS;
-				continue;
-			}
-			break;
-
-			case STEP::STEP_HEADERS:
-			{
-				if (GetHeaders(buffer, filterOwner.inHeaders) == false)
-					continue;
-
-				inStep = STEP::STEP_DECODE;
-				return;	// ヘッダ取得終了
-			}
-			break;
-
-			}	// switch
-
-			if (bRead == false) {
-				::Sleep(10);
-			}
-
-			if (sock->IsConnected() == false)
-				throw std::runtime_error("connection close");
-		}	// for
-	}
-
-	std::string GetHTTPBody(CFilterOwner& filterOwner, CSocket* sock, std::string& buffer)
-	{
-		int64_t inSize = 0;
-		std::string contentLength = UTF8fromUTF16(filterOwner.GetInHeader(L"Content-Length"));
-		if (contentLength.size() > 0) {
-			inSize = boost::lexical_cast<int64_t>(contentLength);
-		} else {
-			throw std::runtime_error("no content-length");
-		}
-
-		for (; sock->IsConnected();) {
-			if (inSize <= buffer.size())
-				break;
-
-			if (ReadSocketBuffer(sock, buffer) == false)
-				::Sleep(10);
-		}
-		return std::move(buffer);
-	}
-
-	std::string GetHTTPPage(CFilterOwner& filterOwner)
-	{
-		// サイトへ接続	
-		auto sockWebsite = ConnectWebsite(UTF8fromUTF16(filterOwner.url.getHostPort()));
-
-		// 送信ヘッダを編集
-		auto outHeadersFiltered = filterOwner.outHeaders;
-
-		if (CUtil::noCaseContains(L"Keep-Alive", CFilterOwner::GetHeader(outHeadersFiltered, L"Proxy-Connection"))) {
-			CFilterOwner::RemoveHeader(outHeadersFiltered, L"Proxy-Connection");
-			CFilterOwner::SetHeader(outHeadersFiltered, L"Connection", L"Keep-Alive");
-		}
-
-		std::string sendOutBuf = "GET " + UTF8fromUTF16(filterOwner.url.getAfterHost()) + " HTTP/1.1" CRLF;
-		for (auto& pair : outHeadersFiltered)
-			sendOutBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendOutBuf += CRLF;
-
-		// GET リクエストを送信
-		if (sockWebsite->Write(sendOutBuf.c_str(), sendOutBuf.length()) == false) {
-			throw std::runtime_error("sockWebsite write error");
-		}
-
-		// HTTP Header を受信する
-		std::string buffer;
-		GetHTTPHeader(filterOwner, sockWebsite.get(), buffer);
-		std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
-
-		std::wstring contentEncoding = filterOwner.GetInHeader(L"Content-Encoding");
-		if (CUtil::noCaseContains(L"gzip", contentEncoding)) {
-			filterOwner.RemoveInHeader(L"Content-Encoding");
-			CZlibBuffer decompressor;
-			decompressor.reset(false, true);
-
-			decompressor.feed(body);
-			decompressor.read(body);
-
-			filterOwner.SetInHeader(L"Content-Length", std::to_wstring(body.length()));
-		}			
-		sockWebsite->Close();
-		return body;
-	}
-
-	std::string SendHTTPResponse(CFilterOwner& filterOwner, const std::string& body, CSocket* sockBrowser)
-	{
-		std::string sendInBuf = "HTTP/1.1 " + filterOwner.responseLine.code + " " + filterOwner.responseLine.msg + CRLF;
-		for (auto& pair : filterOwner.inHeaders)
-			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendInBuf += CRLF;
-		sendInBuf += body;
-
-		// レスポンスを送信
-		auto sock = std::unique_ptr<CSocket>(std::move(sockBrowser));
-		WriteSocketBuffer(sock, sendInBuf.c_str(), sendInBuf.length());
-		sockBrowser = sock.release();
-		return sendInBuf;
-	};
-
 	// ファイル内容を読み込み
 	std::string LoadFile(const std::wstring& filePath)
 	{
@@ -366,6 +125,64 @@ namespace {
 		fscache.close();
 
 		return data;
+	}
+
+	CCriticalSection g_csReduceCache;
+
+	// キャッシュした全動画のファイルサイズが一定以下になるように
+	// 古い動画から削除していく
+	void ReduceCache()
+	{
+		CCritSecLock lock(g_csReduceCache);
+
+		std::list<std::pair<CString, WIN32_FIND_DATA>> cacheFileList;
+		ForEachFileWithAttirbutes(GetCacheFolderPath().c_str(), [&cacheFileList](const CString& filePath, WIN32_FIND_DATA fd) {
+			CString fileName = fd.cFileName;
+			if (fileName.Left(1) == _T("#"))
+				return;
+			if (fileName.Left(2) != _T("sm"))
+				return;
+
+			cacheFileList.emplace_back(filePath, fd);
+		});
+
+		// ファイル作成日時の一番古いファイルを一番上にする
+		cacheFileList.sort([](const std::pair<CString, WIN32_FIND_DATA>& first, const std::pair<CString, WIN32_FIND_DATA>& second) -> bool {
+			auto funcFileTimeToUINT64 = [](FILETIME ft) {
+				return static_cast<uint64_t>(ft.dwHighDateTime) << 32 | ft.dwLowDateTime;
+			};
+			uint64_t firstCreationTime = funcFileTimeToUINT64(first.second.ftCreationTime);
+			uint64_t secondCreationTime = funcFileTimeToUINT64(second.second.ftCreationTime);
+			return firstCreationTime < secondCreationTime;
+		});
+
+		auto funcFileSize = [](const WIN32_FIND_DATA& fd) {
+			return static_cast<uint64_t>(fd.nFileSizeHigh) << 32 | fd.nFileSizeLow;
+		};
+
+		uint64_t totalCacheSize = std::accumulate(cacheFileList.begin(), cacheFileList.end(), static_cast<uint64_t>(0), 
+			[funcFileSize](uint64_t sum, std::pair<CString, WIN32_FIND_DATA>& file) -> uint64_t {
+
+				return sum + funcFileSize(file.second);
+		});
+
+		INFO_LOG << L"ReduceCache totalCacheSize : " << totalCacheSize;
+
+		const uint64_t kMaxCacheSize = 20ui64 * 1024ui64 * 1024ui64 * 1024ui64;	// 20GB
+		if (kMaxCacheSize < totalCacheSize) {
+			do {
+				if (cacheFileList.empty())
+					break;
+
+				auto& cacheFile = cacheFileList.front();
+				INFO_LOG << L"ReduceCache DeleteFile : " << (LPCTSTR)cacheFile.first;
+				::DeleteFile(cacheFile.first);
+				totalCacheSize -= funcFileSize(cacheFile.second);
+				cacheFileList.erase(cacheFileList.begin());
+
+			} while (kMaxCacheSize < totalCacheSize);
+		}
+		
 	}
 
 
@@ -691,7 +508,7 @@ void	CNicoMovieCacheManager::_SendResponseHeader(BrowserRangeRequest& browserRan
 	sendInBuf += CRLF;
 
 	// HTTP Header を送信
-	WriteSocketBuffer(browserRangeRequest.sockBrowser, sendInBuf.c_str(), sendInBuf.length());
+	WriteSocketBuffer(browserRangeRequest.sockBrowser.get(), sendInBuf.c_str(), sendInBuf.length());
 		//throw std::runtime_error("sockBrowser write error");
 
 	browserRangeRequest.bSendResponseHeader = true;
@@ -763,29 +580,17 @@ void CNicoMovieCacheManager::Manage()
 			throw std::runtime_error("file open failed : " + std::string(CW2A(cacheFileManager.IncompleteCachePath().c_str())));
 
 		CUrl url;
-		std::wstring contactHost;
 		HeadPairList outHeaders;
 		if (m_optNicoRequestData) {	// DLのみ
 			url = m_optNicoRequestData->url;
-			contactHost = m_optNicoRequestData->url.getHostPort();
 			outHeaders = m_optNicoRequestData->outHeaders;
 		} else {
 			url = m_browserRangeRequestList.front().filterOwner.url;
-			contactHost = m_browserRangeRequestList.front().filterOwner.contactHost;
 			outHeaders = m_browserRangeRequestList.front().filterOwner.outHeaders;
 		}
 
-		// サイトへ接続
-		m_sockWebsite = ConnectWebsite(UTF8fromUTF16(contactHost));
-
 		// 送信ヘッダを編集
 		auto outHeadersFiltered = outHeaders;
-
-		if (CUtil::noCaseContains(L"Keep-Alive", CFilterOwner::GetHeader(outHeadersFiltered, L"Proxy-Connection"))) {
-			CFilterOwner::RemoveHeader(outHeadersFiltered, L"Proxy-Connection");
-			CFilterOwner::SetHeader(outHeadersFiltered, L"Connection", L"Keep-Alive");
-		}
-
 		if (bIncomplete) {
 			// Range ヘッダを変更して途中からデータを取得する
 			std::wstring range = (boost::wformat(L"bytes=%1%-") % m_movieCacheBuffer.size()).str();
@@ -798,19 +603,13 @@ void CNicoMovieCacheManager::Manage()
 		CFilterOwner::RemoveHeader(outHeadersFiltered, L"If-Modified-Since");
 		CFilterOwner::RemoveHeader(outHeadersFiltered, L"If-None-Match");
 
-		std::string sendOutBuf = "GET " + UTF8fromUTF16(url.getAfterHost()) + " HTTP/1.1" CRLF;
-		for (auto& pair : outHeadersFiltered)
-			sendOutBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendOutBuf += CRLF;
+		// リクエストを送信
+		m_sockWebsite = SendRequest(url, HttpVerb::kHttpGet, outHeadersFiltered);
 
-		// GET リクエストを送信
-		if (m_sockWebsite->Write(sendOutBuf.c_str(), sendOutBuf.length()) == false)
-			throw std::runtime_error("sockWebsite write error");
-
-		// HTTP Header を受信する
+		// レスポンスヘッダ を受信する
 		std::string buffer;
 		CFilterOwner filterOwner;
-		GetHTTPHeader(filterOwner, m_sockWebsite.get(), buffer);
+		GetResponseHeader(filterOwner, m_sockWebsite.get(), buffer);
 
 		// ファイルサイズ取得
 		if (bIncomplete) {
@@ -950,7 +749,7 @@ void CNicoMovieCacheManager::Manage()
 
 						//INFO_LOG << browserRangeRequest.GetID() << L" RangeBegin : " << browserRangeRequest.browserRangeBegin << L" RangeEnd : " << browserRangeRequest.browserRangeEnd << L" RangeBufferPos : " << browserRangeRequest.rangeBufferPos << L" sendSize : " << sendSize;
 
-						WriteSocketBuffer(browserRangeRequest.sockBrowser, 
+						WriteSocketBuffer(browserRangeRequest.sockBrowser.get(), 
 											m_movieCacheBuffer.c_str() + browserRangeRequest.rangeBufferPos, sendSize);
 						browserRangeRequest.rangeBufferPos += sendSize;
 
@@ -1016,6 +815,8 @@ void CNicoMovieCacheManager::Manage()
 
 	CNicoCacheManager::DestroyTransactionData(m_transactionData);
 
+	ReduceCache();
+
 	INFO_LOG << m_smNumber << L" Manage finish";
 }
 
@@ -1059,6 +860,8 @@ void CNicoCacheManager::CreateNicoConnectionFrame()
 {
 	s_nicoConnectionFrame.reset(new CNicoConnectionFrame);
 	s_nicoConnectionFrame->Create(NULL);
+
+	ReduceCache();
 }
 
 std::shared_ptr<TransactionData>	CNicoCacheManager::CreateTransactionData(const std::wstring& name)
@@ -1131,7 +934,7 @@ void CNicoCacheManager::TrapGetFlv(CFilterOwner& filterOwner, CSocket* sockBrows
 			if (filterOwner.responseLine.code != "200")
 				throw std::runtime_error("responseCode not 200 : " + filterOwner.responseCode);
 
-			std::string sendInBuf = SendHTTPResponse(filterOwner, body, sockBrowser);
+			std::string sendInBuf = SendResponse(filterOwner, sockBrowser, body);
 
 			// movieURL を取得
 			std::string escBody = CUtil::UESC(body);
@@ -1149,9 +952,8 @@ void CNicoCacheManager::TrapGetFlv(CFilterOwner& filterOwner, CSocket* sockBrows
 			s_cacheGetflv.second = sendInBuf;
 
 		} else {
-			auto sock = std::unique_ptr<CSocket>(std::move(sockBrowser));
-			WriteSocketBuffer(sock, s_cacheGetflv.second.c_str(), s_cacheGetflv.second.length());
-			sockBrowser = sock.release();
+			// キャッシュを送信
+			WriteSocketBuffer(sockBrowser, s_cacheGetflv.second.c_str(), s_cacheGetflv.second.length());
 			INFO_LOG << smNumber << L" Send CacheGetflv";
 		}
 	}
@@ -1421,23 +1223,13 @@ void CNicoCacheManager::ManageThumbCache(CFilterOwner& filterOwner, std::unique_
 	std::wstring thumbCachePath = GetThumbCachePath(number);
 
 	auto funcSendThumb = [&sockBrowser](const std::string& fileContent) {
-		std::string sendInBuf;
-		sendInBuf = "HTTP/1.1 200 OK" CRLF;
 
-		HeadPairList inHeader;
-		CFilterOwner::SetHeader(inHeader, L"Content-Type", L"image/jpeg");
-		CFilterOwner::SetHeader(inHeader, L"Content-Length", std::to_wstring(fileContent.size()));
-		CFilterOwner::SetHeader(inHeader, L"Connection", L"keep-alive");
+		HeadPairList inHeaders;
+		CFilterOwner::SetHeader(inHeaders, L"Content-Type", L"image/jpeg");
+		CFilterOwner::SetHeader(inHeaders, L"Content-Length", std::to_wstring(fileContent.size()));
+		CFilterOwner::SetHeader(inHeaders, L"Connection", L"keep-alive");
 
-		for (auto& pair : inHeader)
-			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendInBuf += CRLF;
-
-		// HTTP Header を送信
-		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
-
-		// Body を送信
-		WriteSocketBuffer(sockBrowser, fileContent.c_str(), fileContent.length());
+		SendHTTPOK_Response(sockBrowser.get(), inHeaders, fileContent);
 	};
 
 	bool bIncomplete = false;
@@ -1455,82 +1247,55 @@ void CNicoCacheManager::ManageThumbCache(CFilterOwner& filterOwner, std::unique_
 			INFO_LOG << L"Send ThumbCache incomplete found : " << number;
 			bIncomplete = true;
 		}
-
 	}
-
-	// サイトへ接続	
-	auto sockWebsite = ConnectWebsite(UTF8fromUTF16(filterOwner.url.getHostPort()));
 
 	// 送信ヘッダを編集
 	auto outHeadersFiltered = filterOwner.outHeaders;
-
-	if (CUtil::noCaseContains(L"Keep-Alive", CFilterOwner::GetHeader(outHeadersFiltered, L"Proxy-Connection"))) {
-		CFilterOwner::RemoveHeader(outHeadersFiltered, L"Proxy-Connection");
-		CFilterOwner::SetHeader(outHeadersFiltered, L"Connection", L"Keep-Alive");
-	}
-
 	CFilterOwner::RemoveHeader(outHeadersFiltered, L"If-Modified-Since");
 	CFilterOwner::RemoveHeader(outHeadersFiltered, L"If-None-Match");
 
-	std::string sendOutBuf = "GET " + UTF8fromUTF16(filterOwner.url.getAfterHost()) + " HTTP/1.1" CRLF;
-	for (auto& pair : outHeadersFiltered)
-		sendOutBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-	sendOutBuf += CRLF;
+	// リクエストを送信
+	auto sockWebsite = SendRequest(filterOwner.url, HttpVerb::kHttpGet, outHeadersFiltered);
 
-	// GET リクエストを送信
-	if (sockWebsite->Write(sendOutBuf.c_str(), sendOutBuf.length()) == false)
-		throw std::runtime_error("sockWebsite write error");
-
-	// HTTP Header を受信する
+	// レスポンスヘッダを受信する
 	std::string buffer;
-	GetHTTPHeader(filterOwner, sockWebsite.get(), buffer);
+	GetResponseHeader(filterOwner, sockWebsite.get(), buffer);
+	std::string body = GetResponseBody(filterOwner, sockWebsite.get(), buffer);
+	sockWebsite->Close();
 
 	if (filterOwner.responseLine.code != "200") {
-		std::string sendInBuf = "HTTP/1.1 " + filterOwner.responseLine.code + " " + filterOwner.responseLine.msg + CRLF;
-		for (auto& pair : filterOwner.inHeaders)
-			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendInBuf += CRLF;
-
-		// HTTP Header を送信
-		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
-		std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
-		if (body.length() > 0) {
-			WriteSocketBuffer(sockBrowser, body.c_str(), body.length());
-		}
+		SendResponse(filterOwner, sockBrowser.get(), body);
 
 		INFO_LOG << L"Send code[" << filterOwner.responseLine.code << "] : " << number;
 
 	} else {
-		std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
 		if (body.empty()) {
-			std::string sendInBuf = "HTTP/1.1 404 Not Found" CRLF;
-			for (auto& pair : filterOwner.inHeaders)
-				sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-			sendInBuf += CRLF;
+			filterOwner.responseLine.code = "404";
+			filterOwner.responseLine.msg = "Not Found";
 
-			// HTTP Header を送信
-			WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
+			SendResponse(filterOwner, sockBrowser.get(), "");
 
 			INFO_LOG << L"Send body empty" << number;
-			return;
-		}
-		funcSendThumb(body);
 
-		if (bIncomplete == false) {
-			CCritSecLock lock(g_csSaveThumb);
+		} else {
+			funcSendThumb(body);
 
-			std::wstring incompletePath = GetThumbCacheFolderPath() + number + L".jpg.incomplete";
-			std::ofstream fscache(incompletePath, std::ios::out | std::ios::binary);
-			fscache.write(body.c_str(), body.size());
-			fscache.close();
+			if (bIncomplete == false) {
+				CCritSecLock lock(g_csSaveThumb);
 
-			std::wstring completePath = GetThumbCacheFolderPath() + number + L".jpg";
-			BOOL bRet = ::MoveFile(incompletePath.c_str(), completePath.c_str());
-			if (bRet == 0) {
-				ERROR_LOG << L"MoveFile failed : src : " << incompletePath << L" dest : " << completePath;
+				std::wstring incompletePath = GetThumbCacheFolderPath() + number + L".jpg.incomplete";
+				std::ofstream fscache(incompletePath, std::ios::out | std::ios::binary);
+				fscache.write(body.c_str(), body.size());
+				fscache.close();
+
+				std::wstring completePath = GetThumbCacheFolderPath() + number + L".jpg";
+				BOOL bRet = ::MoveFile(incompletePath.c_str(), completePath.c_str());
+				if (bRet == 0) {
+					ERROR_LOG << L"MoveFile failed : src : " << incompletePath << L" dest : " << completePath;
+				}
 			}
+			INFO_LOG << L"Get and Send ThumbCache : " << number;
 		}
-		INFO_LOG << L"Get and Send ThumbCache : " << number;
 	}
 }
 
@@ -1555,10 +1320,6 @@ bool CNicoCacheManager::IsNicoCacheServerRequest(const CUrl& url)
 
 void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::unique_ptr<CSocket>& sockBrowser)
 {
-	
-
-
-
 	std::wstring query = filterOwner.url.getQuery();
 	auto pos = query.find(L"videoConvert_smNumber=");
 	if (pos != std::wstring::npos) {
@@ -1584,23 +1345,13 @@ void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::un
 		}
 
 		std::string sendBody = "VideoConvert request complete!";
-		std::string sendInBuf;
-		sendInBuf = "HTTP/1.1 200 OK" CRLF;
 
-		HeadPairList inHeader;
-		CFilterOwner::SetHeader(inHeader, L"Content-Type", L"text/html");
-		CFilterOwner::SetHeader(inHeader, L"Content-Length", std::to_wstring(sendBody.size()));
-		CFilterOwner::SetHeader(inHeader, L"Connection", L"keep-alive");
+		HeadPairList inHeaders;
+		CFilterOwner::SetHeader(inHeaders, L"Content-Type", L"text/html");
+		CFilterOwner::SetHeader(inHeaders, L"Content-Length", std::to_wstring(sendBody.size()));
+		CFilterOwner::SetHeader(inHeaders, L"Connection", L"keep-alive");
 
-		for (auto& pair : inHeader)
-			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendInBuf += CRLF;
-
-		// HTTP Header を送信
-		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
-
-		// Body を送信
-		WriteSocketBuffer(sockBrowser, sendBody.c_str(), sendBody.length());
+		SendHTTPOK_Response(sockBrowser.get(), inHeaders, sendBody);
 
 	} else {
 		std::wstring json;
@@ -1662,23 +1413,12 @@ void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::un
 
 		std::string sendBody = UTF8fromUTF16(json);
 
-		std::string sendInBuf;
-		sendInBuf = "HTTP/1.1 200 OK" CRLF;
+		HeadPairList inHeaders;
+		CFilterOwner::SetHeader(inHeaders, L"Content-Type", L"application/json; charset=utf-8");
+		CFilterOwner::SetHeader(inHeaders, L"Content-Length", std::to_wstring(sendBody.size()));
+		CFilterOwner::SetHeader(inHeaders, L"Connection", L"keep-alive");
 
-		HeadPairList inHeader;
-		CFilterOwner::SetHeader(inHeader, L"Content-Type", L"application/json; charset=utf-8");
-		CFilterOwner::SetHeader(inHeader, L"Content-Length", std::to_wstring(sendBody.size()));
-		CFilterOwner::SetHeader(inHeader, L"Connection", L"keep-alive");
-
-		for (auto& pair : inHeader)
-			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendInBuf += CRLF;
-
-		// HTTP Header を送信
-		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
-
-		// Body を送信
-		WriteSocketBuffer(sockBrowser, sendBody.c_str(), sendBody.length());
+		SendHTTPOK_Response(sockBrowser.get(), inHeaders, sendBody);
 	}
 }
 
@@ -1912,14 +1652,14 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 		if (s_cacheGetThumbInfo.first != smNumber) {
 
 			std::string body = GetHTTPPage(filterOwner);
-			std::string sendInBuf = SendHTTPResponse(filterOwner, body, sockBrowser.get());
+			std::string sendInBuf = SendResponse(filterOwner, sockBrowser.get(), body);
 
 			s_cacheGetThumbInfo.first = smNumber;
 			s_cacheGetThumbInfo.second = sendInBuf;
 
 		} else {
-			// レスポンスを送信
-			WriteSocketBuffer(sockBrowser, s_cacheGetThumbInfo.second.c_str(), s_cacheGetThumbInfo.second.length());
+			// キャッシュを送信
+			WriteSocketBuffer(sockBrowser.get(), s_cacheGetThumbInfo.second.c_str(), s_cacheGetThumbInfo.second.length());
 			INFO_LOG << smNumber << L" Send CacheThumbInfo";
 		}
 		return true;
@@ -1948,14 +1688,14 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 			} else {
 				ATLASSERT(FALSE);
 			}
-			std::string sendInBuf = SendHTTPResponse(filterOwner, body, sockBrowser.get());
+			std::string sendInBuf = SendResponse(filterOwner, sockBrowser.get(), body);
 
 			s_cacheWatchPage.first = smNumber;
 			s_cacheWatchPage.second = sendInBuf;
 
 		} else {
-			// レスポンスを送信
-			WriteSocketBuffer(sockBrowser, s_cacheWatchPage.second.c_str(), s_cacheWatchPage.second.length());
+			// キャッシュを送信
+			WriteSocketBuffer(sockBrowser.get(), s_cacheWatchPage.second.c_str(), s_cacheWatchPage.second.length());
 			INFO_LOG << smNumber << L" Send CacheWatchPage";
 		}
 		return true;
@@ -2032,58 +1772,32 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 			if (body.length() > 0) {
 				HeadPairList& inHeaders = bOwnerComment ? s_cacheCommentList.second.inOwnerHeaders : s_cacheCommentList.second.inHeaders;
 				// レスポンスを送信
-				std::string sendInBuf = "HTTP/1.1 200 OK" CRLF;
-				for (auto& pair : inHeaders)
-					sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-				sendInBuf += CRLF;
-
-				WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
-				WriteSocketBuffer(sockBrowser, body.c_str(), body.length());
+				SendHTTPOK_Response(sockBrowser.get(), inHeaders, body);
 
 				INFO_LOG << threadNumber << L" Send CacheComment : ownerComment : " << bOwnerComment;
 				return true;
 			}
 		}
 
-		auto funcPostAndGet = [&](const std::string& postData) -> std::string {
-			// サイトへ接続	
-			auto sockWebsite = ConnectWebsite(UTF8fromUTF16(filterOwner.url.getHostPort()));
-
+		auto funcPostAndGet = [&](const std::string& postData) -> std::string 
+		{
 			// 送信ヘッダを編集
 			auto outHeadersFiltered = filterOwner.outHeaders;
-
-			if (CUtil::noCaseContains(L"Keep-Alive", CFilterOwner::GetHeader(outHeadersFiltered, L"Proxy-Connection"))) {
-				CFilterOwner::RemoveHeader(outHeadersFiltered, L"Proxy-Connection");
-				CFilterOwner::SetHeader(outHeadersFiltered, L"Connection", L"Keep-Alive");
-			}
 			CFilterOwner::SetHeader(outHeadersFiltered, L"Content-Length", std::to_wstring(postData.length()));
 
-			std::string sendOutBuf = "POST " + UTF8fromUTF16(filterOwner.url.getAfterHost()) + " HTTP/1.1" CRLF;
-			for (auto& pair : outHeadersFiltered)
-				sendOutBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-			sendOutBuf += CRLF;
+			// POSTリクエストを送信
+			auto sockWebsite = SendRequest(filterOwner.url, HttpVerb::kHttpPost, outHeadersFiltered);
 
-			// POST リクエストを送信
-			WriteSocketBuffer(sockWebsite, sendOutBuf.c_str(), sendOutBuf.length());
-			WriteSocketBuffer(sockWebsite, postData.c_str(), postData.length());
+			// Post内容を送信
+			WriteSocketBuffer(sockWebsite.get(), postData.c_str(), postData.length());
 
 			// HTTP Header を受信する
 			std::string buffer;
-			GetHTTPHeader(filterOwner, sockWebsite.get(), buffer);
-			std::string body = GetHTTPBody(filterOwner, sockWebsite.get(), buffer);
+			filterOwner.inHeaders.clear();
+			GetResponseHeader(filterOwner, sockWebsite.get(), buffer);
+			// Body を受信する
+			std::string body = GetResponseBody(filterOwner, sockWebsite.get(), buffer);
 			sockWebsite->Close();
-
-			std::wstring contentEncoding = filterOwner.GetInHeader(L"Content-Encoding");
-			if (CUtil::noCaseContains(L"gzip", contentEncoding)) {
-				filterOwner.RemoveInHeader(L"Content-Encoding");
-				CZlibBuffer decompressor;
-				decompressor.reset(false, true);
-
-				decompressor.feed(body);
-				decompressor.read(body);
-
-				filterOwner.SetInHeader(L"Content-Length", std::to_wstring(body.length()));
-			}
 			return body;
 		};
 
@@ -2117,17 +1831,38 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 			6 = READONLY(コメントは書き込めない)
 			8 = TOO_LONG(コメント内容が長すぎる)
 			*/
+			auto funcSuccessThenAppendComment = [&](boost::property_tree::wptree resultTree) {
+				std::string& commentList = s_cacheCommentList.second.commentListBody;
+				if (commentList.empty()) {
+					ERROR_LOG << L"no cache comment";
+
+				} else {
+					// コメントリストを更新
+					int no = resultTree.get<int>(L"packet.chat_result.<xmlattr>.no");
+					std::string last_res = "last_res=\"" + std::to_string(no) + "\"";
+					std::regex rx4("last_res=\"\\d+\"");
+					commentList = std::regex_replace(commentList, rx4, last_res, std::regex_constants::format_first_only);
+
+					std::string lastComment = (boost::format("<chat thread=\"%1%\" no=\"%2%\" vpos=\"%3%\" date=\"%4%\" mail=\"184\" user_id=\"test\" anonymity=\"1\">%5%</chat></packet>") % threadNumber % no % vpos % time(nullptr) % comment).str();
+					boost::replace_last(commentList, "</packet>", lastComment);
+
+					CFilterOwner::SetHeader(s_cacheCommentList.second.inHeaders, L"Content-Length", std::to_wstring(commentList.size()));
+				}
+			};
+
 			std::wstring utf16body = UTF16fromUTF8(body);
 			auto resultTree = ptreeWrapper::BuildPtreeFromText(utf16body);
 			int status = resultTree.get<int>(L"packet.chat_result.<xmlattr>.status");
 			if (status != 0) {
-				ERROR_LOG << L"Post Comment no status : " << body;
+				ERROR_LOG << L"Post Comment failed : " << body;
 				if (status == 3) {
 					INFO_LOG << L"status == 3 do retry";
-					std::string retryPostBody = "<thread res_from=\"-1\" version=\"20061206\" scores=\"1\" thread=\"1437311665\" />";
+					std::string retryThread = UTF8fromUTF16(resultTree.get<std::wstring>(L"packet.chat_result.<xmlattr>.thread"));
+					std::string retryPostBody = "<thread res_from=\"-1\" version=\"20061206\" scores=\"1\" thread=\"" + retryThread + "\" />";
 					std::string retryResult = funcPostAndGet(retryPostBody);
 					if (retryResult.empty()) {
 						ERROR_LOG << L"retry PostAndGet failed";
+
 					} else {
 						std::wstring utf16RetryResult = UTF16fromUTF8(retryResult);
 						auto retryResultTree = ptreeWrapper::BuildPtreeFromText(utf16RetryResult);
@@ -2141,41 +1876,36 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 						CFilterOwner::SetHeader(s_cacheCommentList.second.inHeaders, L"Content-Length", std::to_wstring(commentList.size()));
 
 						INFO_LOG << L"ticket replaced : " << ticket;
+
+						// コメント書き込みのリトライ
+						recvOutBuf = std::regex_replace(recvOutBuf, rx5, replaceTicket, std::regex_constants::format_first_only);
+						INFO_LOG << L"retry postComment : " << recvOutBuf;
+						body = funcPostAndGet(recvOutBuf);
+						if (body.empty()) {
+							ERROR_LOG << L"retry response body empty";
+
+						} else {
+							INFO_LOG << L"retry response body : " << body;
+
+							utf16body = UTF16fromUTF8(body);
+							resultTree = ptreeWrapper::BuildPtreeFromText(utf16body);
+							int retrystatus = resultTree.get<int>(L"packet.chat_result.<xmlattr>.status");
+							if (retrystatus != 0) {
+								ERROR_LOG << L"retry failed status : " << status;
+
+							} else {
+								funcSuccessThenAppendComment(resultTree);
+							}
+						}
 					}
 				}
 			} else {
-				int no = resultTree.get<int>(L"packet.chat_result.<xmlattr>.no");
-				if (status != 0) {
-					ERROR_LOG << L"Post Comment failed status : " << status;
-
-				} else {
-					std::string& commentList = s_cacheCommentList.second.commentListBody;
-					if (commentList.empty()) {
-						ERROR_LOG << L"no cache comment";
-
-					} else {
-						// コメントリストを更新
-						std::string last_res = "last_res=\"" + std::to_string(no) + "\"";
-						std::regex rx4("last_res=\"\\d+\"");
-						commentList = std::regex_replace(commentList, rx4, last_res, std::regex_constants::format_first_only);
-
-						std::string lastComment = (boost::format("<chat thread=\"%1%\" no=\"%2%\" vpos=\"%3%\" date=\"%4%\" mail=\"184\" user_id=\"test\" anonymity=\"1\">%5%</chat></packet>") % threadNumber % no % vpos % time(nullptr) % comment).str();
-						boost::replace_last(commentList, "</packet>", lastComment);
-
-						CFilterOwner::SetHeader(s_cacheCommentList.second.inHeaders, L"Content-Length", std::to_wstring(commentList.size()));
-					}
-				}
+				funcSuccessThenAppendComment(resultTree);
 			}
 		}
 
 		// レスポンスを送信
-		std::string sendInBuf = "HTTP/1.1 " + filterOwner.responseLine.code + " " + filterOwner.responseLine.msg + CRLF;
-		for (auto& pair : filterOwner.inHeaders)
-			sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-		sendInBuf += CRLF;
-
-		WriteSocketBuffer(sockBrowser, sendInBuf.c_str(), sendInBuf.length());
-		WriteSocketBuffer(sockBrowser, body.c_str(), body.length());
+		SendResponse(filterOwner, sockBrowser.get(), body);
 
 		INFO_LOG << L"thread : " << threadNumber << L" postComment : " << bPostComment << L" " << timer.format();
 		return true;

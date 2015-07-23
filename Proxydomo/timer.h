@@ -10,7 +10,7 @@
 class timer : public boost::timer::cpu_timer
 {
 public:
-	timer(const std::string& format = "elapsed time [%ws]") : m_format(format)
+	timer(const std::string& format = "[%ws elapsed]") : m_format(format)
 	{
 		start();
 	}
