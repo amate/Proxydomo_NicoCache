@@ -66,6 +66,35 @@ bool ForEachFile(const CString &strDirectoryPath, _Function __f)
 }
 
 template <class _Function>
+bool ForEachFileWithAttirbutes(const CString &strDirectoryPath, _Function __f)
+{
+	CString 		strPathFind = strDirectoryPath;
+
+	::PathAddBackslash(strPathFind.GetBuffer(MAX_PATH));
+	strPathFind.ReleaseBuffer();
+
+	CString 		strPath = strPathFind;
+	strPathFind += _T("*.*");
+
+	WIN32_FIND_DATA wfd;
+	HANDLE	h = ::FindFirstFile(strPathFind, &wfd);
+	if (h == INVALID_HANDLE_VALUE)
+		return false;
+
+	// Now scan the directory
+	do {
+		// it is a file
+		if ((wfd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) == 0) {
+			__f(strPath + wfd.cFileName, wfd);
+		}
+	} while (::FindNextFile(h, &wfd));
+
+	::FindClose(h);
+
+	return true;
+}
+
+template <class _Function>
 bool ForEachFileFolder(const CString &strDirectoryPath, _Function __f)
 {
 	CString 		strPathFind = strDirectoryPath;
