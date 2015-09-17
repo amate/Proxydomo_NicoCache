@@ -3,6 +3,7 @@
 */
 
 #include "stdafx.h"
+#include "Logger.h"
 #include "MediaInfo.h"
 #include "..\libmediainfo_0.7.75_AllInclusive\MediaInfoLib\Source\MediaInfoDLL\MediaInfoDLL.h"
 #pragma comment(lib, "MediaInfo.lib")
@@ -20,26 +21,34 @@ std::unique_ptr<VideoInfo>	GetVideoInfo(const std::wstring& filePath)
 	if (MI.Open(filePath) == 0)
 		return nullptr;
 
-	videoInfo->width = std::stoi(MI.Get(Stream_Video, 0, _T("Width")).c_str());
-	videoInfo->height = std::stoi(MI.Get(Stream_Video, 0, _T("Height")).c_str());
+	std::wstring rawVideoInfo = MI.Inform();
 
-	videoInfo->fps = std::stof(MI.Get(Stream_Video, 0, _T("FrameRate")));
+	try {
+		videoInfo->width = std::stoi(MI.Get(Stream_Video, 0, _T("Width")).c_str());
+		videoInfo->height = std::stoi(MI.Get(Stream_Video, 0, _T("Height")).c_str());
 
-	videoInfo->formatProfile = MI.Get(Stream_Video, 0, _T("Format_Profile"));
+		videoInfo->fps = std::stof(MI.Get(Stream_Video, 0, _T("FrameRate")));
 
-	videoInfo->ref_frames = std::stoi(MI.Get(Stream_Video, 0, _T("Format_Settings_RefFrames")));
+		videoInfo->formatProfile = MI.Get(Stream_Video, 0, _T("Format_Profile"));
 
-	std::wstring encodeSettings = MI.Get(Stream_Video, 0, _T("Encoded_Library_Settings"));
-	// weightp=2 ‚¾‚ÆiPhone4S‚Å‰f‘œ‚ªŽ~‚Ü‚Á‚Ä‚µ‚Ü‚¤H (—á: sm26702656, sm26701432(High@L5.0‚È‚Ì‚ÅÄ¶‚Å‚«‚È‚¢)
-	auto pos = encodeSettings.find(L"weightb=");
-	if (pos != std::wstring::npos) {
-		std::wstring weightb = encodeSettings.substr(pos + 8, 1);
-		videoInfo->weightb = std::stoi(weightb);
-	} else {
-		videoInfo->weightb = 0;
+		videoInfo->ref_frames = std::stoi(MI.Get(Stream_Video, 0, _T("Format_Settings_RefFrames")));
+
+		std::wstring encodeSettings = MI.Get(Stream_Video, 0, _T("Encoded_Library_Settings"));
+		// weightp=2 ‚¾‚ÆiPhone4S‚Å‰f‘œ‚ªŽ~‚Ü‚Á‚Ä‚µ‚Ü‚¤H (—á: sm26702656, sm26701432(High@L5.0‚È‚Ì‚ÅÄ¶‚Å‚«‚È‚¢)
+		auto pos = encodeSettings.find(L"weightb=");
+		if (pos != std::wstring::npos) {
+			std::wstring weightb = encodeSettings.substr(pos + 8, 1);
+			videoInfo->weightb = std::stoi(weightb);
+		} else {
+			videoInfo->weightb = 0;
+		}
+
+		return videoInfo;
 	}
-
-	return videoInfo;
+	catch (std::exception& e) {
+		ERROR_LOG << L"GetVideoInfo failed : " << e.what();
+		return nullptr;
+	}
 }
 
 

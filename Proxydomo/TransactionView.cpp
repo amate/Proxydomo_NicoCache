@@ -9,11 +9,13 @@
 #include <boost\property_tree\ini_parser.hpp>
 #include <VersionHelpers.h>
 #include <vsstyle.h>
+#include <ShlObj.h>
 #include "Misc.h"
 #include "Logger.h"
+#include "NicoCachemanager.h"
 #include "UITranslator.h"
-using namespace UITranslator;
 
+using namespace UITranslator;
 using namespace boost::property_tree;
 
 
@@ -65,6 +67,97 @@ void	CTransactionView::DestroyTransactionData(std::shared_ptr<TransactionData> t
 	if (IsWindow()) {
 		_RefreshList();
 	}
+}
+
+HRESULT STDMETHODCALLTYPE CTransactionView::QueryInterface(
+	/* [in] */ REFIID riid,
+	/* [iid_is][out] */ _COM_Outptr_ void __RPC_FAR *__RPC_FAR *ppvObject)
+{
+	if (IsEqualIID(riid, IID_IUnknown)) {
+		*ppvObject = static_cast<IUnknown*>(this);
+		return S_OK;
+	} else if (IsEqualIID(riid, IID_IDropTarget)) {
+		*ppvObject = static_cast<IDropTarget*>(this);
+		return S_OK;
+	}
+	return E_NOINTERFACE;
+}
+
+static bool IsShellURLDataObject(IDataObject* pDataObj)
+{
+	const UINT	CF_SHELLURLW = ::RegisterClipboardFormat(CFSTR_INETURLW);
+
+	FORMATETC  formatetc = {};
+	formatetc.cfFormat = CF_SHELLURLW;
+	formatetc.dwAspect = DVASPECT_CONTENT;
+	formatetc.lindex = -1;
+	formatetc.tymed = TYMED_HGLOBAL;
+
+	HRESULT hr = pDataObj->QueryGetData(&formatetc);
+	if (hr == S_OK)
+		return true;
+	else
+		return false;
+}
+
+HRESULT STDMETHODCALLTYPE CTransactionView::DragEnter(
+	/* [unique][in] */ __RPC__in_opt IDataObject *pDataObj,
+	/* [in] */ DWORD grfKeyState,
+	/* [in] */ POINTL pt,
+	/* [out][in] */ __RPC__inout DWORD *pdwEffect)
+{
+	
+	if (IsShellURLDataObject(pDataObj)) {
+		*pdwEffect = DROPEFFECT_LINK | DROPEFFECT_COPY;
+		return S_OK;
+
+	} else {
+		*pdwEffect = DROPEFFECT_NONE;
+		return DRAGDROP_S_CANCEL;
+	}
+}
+
+HRESULT STDMETHODCALLTYPE CTransactionView::DragOver(
+	/* [in] */ DWORD grfKeyState,
+	/* [in] */ POINTL pt,
+	/* [out][in] */ __RPC__inout DWORD *pdwEffect)
+{
+
+	*pdwEffect = DROPEFFECT_LINK | DROPEFFECT_COPY;
+	return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE CTransactionView::DragLeave(void)
+{
+	return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE CTransactionView::Drop(
+	/* [unique][in] */ __RPC__in_opt IDataObject *pDataObj,
+	/* [in] */ DWORD grfKeyState,
+	/* [in] */ POINTL pt,
+	/* [out][in] */ __RPC__inout DWORD *pdwEffect)
+{
+	if (IsShellURLDataObject(pDataObj) == false)
+		return S_OK;
+
+	const UINT	CF_SHELLURLW = ::RegisterClipboardFormat(CFSTR_INETURLW);
+	FORMATETC  formatetc = {};
+	formatetc.cfFormat = CF_SHELLURLW;
+	formatetc.dwAspect = DVASPECT_CONTENT;
+	formatetc.lindex = -1;
+	formatetc.tymed = TYMED_HGLOBAL;
+
+	STGMEDIUM medium = {};
+	HRESULT hr = pDataObj->GetData(&formatetc, &medium);
+	if (hr == S_OK) {
+		auto url = static_cast<LPCWSTR>(GlobalLock(medium.hGlobal));
+		CNicoCacheManager::QueDownloadVideo(url);
+
+		GlobalUnlock(medium.hGlobal);
+		ReleaseStgMedium(&medium);
+	}
+	return S_OK;
 }
 
 void	CTransactionView::_RefreshList()
@@ -433,6 +526,8 @@ int CTransactionView::OnCreate(LPCREATESTRUCT lpCreateStruct)
 	OpenThemeData(L"PROGRESS");
 
 	//RegisterDragDrop();
+	HRESULT hr = RegisterDragDrop(m_hWnd, this);
+	ATLASSERT(hr == S_OK);
 
 	return 0;
 }
@@ -442,6 +537,9 @@ void CTransactionView::OnDestroy()
 	SetMsgHandled(FALSE);
 
 	KillTimer(kUpdateListTimerId);
+
+	HRESULT hr = RevokeDragDrop(m_hWnd);
+	ATLASSERT(hr == S_OK);
 
 }
 
@@ -548,7 +646,7 @@ int		CNicoConnectionFrame::OnCreate(LPCREATESTRUCT lpCreateStruct)
 
 void	CNicoConnectionFrame::OnDestroy()
 {
-	std::string settingsPath = CT2A(Misc::GetExeDirectory() + _T("settings.ini"));
+	std::string settingsPath = (LPCSTR)CT2A(Misc::GetExeDirectory() + _T("settings.ini"));
 	ptree pt;
 	try {
 		read_ini(settingsPath, pt);

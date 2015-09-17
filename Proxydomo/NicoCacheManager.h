@@ -97,7 +97,7 @@ class CNicoMovieCacheManager
 		}
 	};
 
-	CNicoMovieCacheManager() : m_bReserveVideoConvert(false)
+	CNicoMovieCacheManager() : m_bReserveVideoConvert(false), m_retryCount(0)
 	{}
 
 public:
@@ -128,6 +128,8 @@ private:
 	void	_InitRangeSetting(BrowserRangeRequest& browserRangeRequest);
 	void	_SendResponseHeader(BrowserRangeRequest& browserRangeRequest);
 
+	bool	_RetryDownload(const NicoRequestData& nicoRequestData, std::ofstream& fs);
+
 	std::atomic_bool	m_active;
 	std::string m_smNumber;
 	std::thread	m_thisThread;
@@ -146,6 +148,9 @@ private:
 	std::shared_ptr<TransactionData>	m_transactionData;
 
 	bool	m_bReserveVideoConvert;
+
+	enum { kMaxRetryCount = 10 };
+	int		m_retryCount;
 
 };
 
@@ -178,6 +183,8 @@ public:
 
 	static void AddDLQue(const std::string& smNumber, const NicoRequestData& nicoRequestData);
 	static void ConsumeDLQue();
+
+	static void QueDownloadVideo(const std::wstring& watchPageURL);
 
 	static std::shared_ptr<TransactionData>	CreateTransactionData(const std::wstring& name);
 	static void	DestroyTransactionData(std::shared_ptr<TransactionData> transData);
@@ -267,6 +274,9 @@ private:
 
 	static CCriticalSection s_csCacheCommentList;
 	static std::pair<std::string, NicoCommentList> s_cacheCommentList;
+
+	static CCriticalSection s_csLastOutHeaders;
+	static HeadPairList s_lastOutHeaders;
 };
 
 

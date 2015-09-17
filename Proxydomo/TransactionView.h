@@ -97,7 +97,8 @@ struct TransactionData
 
 class CTransactionView : 
 	public CScrollWindowImpl<CTransactionView>, 
-	public CThemeImpl<CTransactionView>
+	public CThemeImpl<CTransactionView>,
+	public IDropTarget
 {
 public:
 
@@ -144,6 +145,30 @@ public:
 
 	// Overrides
 	void	DoPaint(CDCHandle dc);
+
+	// IDropTarget
+	virtual HRESULT STDMETHODCALLTYPE QueryInterface(
+		/* [in] */ REFIID riid,
+		/* [iid_is][out] */ _COM_Outptr_ void __RPC_FAR *__RPC_FAR *ppvObject);
+	virtual ULONG STDMETHODCALLTYPE AddRef(void) { return 1; }
+	virtual ULONG STDMETHODCALLTYPE Release(void) { return 1; }
+
+	virtual HRESULT STDMETHODCALLTYPE DragEnter(
+		/* [unique][in] */ __RPC__in_opt IDataObject *pDataObj,
+		/* [in] */ DWORD grfKeyState,
+		/* [in] */ POINTL pt,
+		/* [out][in] */ __RPC__inout DWORD *pdwEffect);
+	virtual HRESULT STDMETHODCALLTYPE DragOver(
+		/* [in] */ DWORD grfKeyState,
+		/* [in] */ POINTL pt,
+		/* [out][in] */ __RPC__inout DWORD *pdwEffect);
+	virtual HRESULT STDMETHODCALLTYPE DragLeave(void);
+	virtual HRESULT STDMETHODCALLTYPE Drop(
+		/* [unique][in] */ __RPC__in_opt IDataObject *pDataObj,
+		/* [in] */ DWORD grfKeyState,
+		/* [in] */ POINTL pt,
+		/* [out][in] */ __RPC__inout DWORD *pdwEffect);
+
 
 	// Message map
 	BEGIN_MSG_MAP_EX(CTransactionView)

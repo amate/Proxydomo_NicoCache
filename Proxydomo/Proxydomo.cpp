@@ -81,6 +81,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPTSTR lp
 	// ATLTRACEで日本語を使うために必要
 	_tsetlocale( LC_ALL, _T("japanese") );
 #endif
+	hRes = ::OleInitialize(NULL);
+	ATLASSERT(SUCCEEDED(hRes));
 
 	// this resolves ATL window thunking problem when Microsoft Layer for Unicode (MSLU) is used
 	::DefWindowProc(NULL, 0, 0, 0L);
@@ -136,6 +138,8 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPTSTR lp
 	}
 
 	FreeLibrary(hRich);
+
+	::OleUninitialize();
 
 	_Module.Term();
 	::CoUninitialize();
