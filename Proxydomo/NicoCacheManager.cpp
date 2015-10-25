@@ -597,7 +597,7 @@ void CNicoMovieCacheManager::Manage()
 
 		// 送信ヘッダを編集
 		auto outHeadersFiltered = outHeaders;
-		if (bIncomplete) {
+		if (bIncomplete && m_movieCacheBuffer.size() > 0) {
 			// Range ヘッダを変更して途中からデータを取得する
 			std::wstring range = (boost::wformat(L"bytes=%1%-") % m_movieCacheBuffer.size()).str();
 			CFilterOwner::SetHeader(outHeadersFiltered, L"Range", range);
@@ -616,10 +616,37 @@ void CNicoMovieCacheManager::Manage()
 		std::string buffer;
 		CFilterOwner filterOwner;
 		GetResponseHeader(filterOwner, m_sockWebsite.get(), buffer);
-		ATLASSERT(filterOwner.responseLine.code == "200");
+		if (filterOwner.responseLine.code != "200" && filterOwner.responseLine.code != "206") {
+			// ブラウザへ接続エラーを通知する
+			std::string sendInBuf = "HTTP/1.1 " + filterOwner.responseLine.code + " " + filterOwner.responseLine.msg + CRLF;
+			std::string name;
+			for (auto& pair : filterOwner.inHeaders)
+				sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
+
+			sendInBuf += CRLF;
+			sendInBuf += buffer;
+			if (m_browserRangeRequestList.size() > 0) {
+				WriteSocketBuffer(m_browserRangeRequestList.front().sockBrowser.get(), sendInBuf.c_str(), sendInBuf.length());
+				m_browserRangeRequestList.front().sockBrowser->Close();
+				m_browserRangeRequestList.erase(m_browserRangeRequestList.begin());
+			}
+
+			m_sockWebsite->Close();
+			m_sockWebsite.reset();
+
+			// 履歴に書き込み
+			CCritSecLock lock(m_transactionData->csData);
+			m_transactionData->detailText.Format(L"接続エラー code : %d", std::stoi(filterOwner.responseLine.code));
+
+			CNicoCacheManager::AddDLedNicoCacheManager(m_smNumber, m_transactionData);
+			CNicoCacheManager::DestroyTransactionData(m_transactionData);
+
+			ERROR_LOG << m_smNumber << L" 接続エラー code : " << filterOwner.responseLine.code;
+			return;
+		}
 
 		// ファイルサイズ取得
-		if (bIncomplete) {
+		if (bIncomplete && m_movieCacheBuffer.size() > 0) {
 			std::wstring contentRange = filterOwner.GetInHeader(L"Content-Range");
 			std::wregex rx(L"bytes \\d+-\\d+/(\\d+)");
 			std::wsmatch result;
@@ -644,6 +671,7 @@ void CNicoMovieCacheManager::Manage()
 		m_movieCacheBuffer += buffer;
 		m_lastMovieSize = m_movieCacheBuffer.size();
 		m_transactionData->lastDLPos = m_lastMovieSize;
+		m_transactionData->oldDLPos = m_lastMovieSize;
 
 		if (m_optNicoRequestData) {
 			nicoRequestData = m_optNicoRequestData.get();
@@ -659,6 +687,7 @@ void CNicoMovieCacheManager::Manage()
 	bool debugSizeCheck = false;
 	bool isAddDLedList = false;
 	steady_clock::time_point lastTime;
+	boost::optional<steady_clock::time_point> optboostTimeCountStart = steady_clock::now();
 	for (;;) {
 		{
 			CCritSecLock lock(m_csBrowserRangeRequestList);
@@ -825,6 +854,15 @@ void CNicoMovieCacheManager::Manage()
 			}
 
 			::Sleep(50);
+		}
+
+		// 10秒経ったら一度切って再接続する
+		if (optboostTimeCountStart && m_sockWebsite && m_sockWebsite->IsConnected() && fs &&
+			((steady_clock::now() - *optboostTimeCountStart) > seconds(10))) 
+		{
+			INFO_LOG << m_smNumber << L" boost retry download";
+			_RetryDownload(nicoRequestData, fs);
+			optboostTimeCountStart.reset();
 		}
 	}	// for(;;)
 

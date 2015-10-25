@@ -252,6 +252,7 @@ void	CTransactionView::_UpdateListInfo()
 				::swprintf(strTransferRate.GetBuffer(30), _T(" (%.1lf KB/sec)"), dKbTransferRate);
 				strTransferRate.ReleaseBuffer();
 			}
+			//INFO_LOG << L"nProgressMargin : " << nProgressMargin << L" nTotalTime : " << nTotalTime << L" transferRate : " << (LPCWSTR)strTransferRate;
 
 			// Žc‚è 4 •ª
 			int64_t nRestByte = data.fileSize - data.lastDLPos;
