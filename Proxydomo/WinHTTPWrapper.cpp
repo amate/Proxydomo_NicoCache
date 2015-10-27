@@ -152,13 +152,18 @@ boost::optional<std::string>	HttpDownloadData(const CString& url)
 		CUrl	downloadUrl(url);
 		auto hConnect = HttpConnect(downloadUrl);
 		auto hRequest = HttpOpenRequest(downloadUrl, hConnect);
-		if (HttpSendRequestAndReceiveResponse(hRequest)) 
-			return HttpReadData(hRequest);
+		if (HttpSendRequestAndReceiveResponse(hRequest)) {
+			if (HttpQueryStatusCode(hRequest) == 200) {
+				return HttpReadData(hRequest);
+			} else {
+				return boost::optional<std::string>();
+			}
+		}
 	} catch (boost::exception& e) {
 		std::string expText = boost::diagnostic_information(e);
 		int a = 0;
 	}	
-	return boost::none;
+	return boost::optional<std::string>();
 }
 
 

@@ -1085,6 +1085,12 @@ CNode* CMatcher::code(StringCharacterIterator& patternIt)
 			} else if (command == L"FAILFOUND") {
 				return new CNode_Command(CMD_FAILFOUND, L"", L"");
 
+			} else if (command == L"DLCOUNTANDCLIENTDOCOMPLETE") {
+				return new CNode_Command(CMD_DLCOUNTANDCLIENTDOCOMPLETE, L"", L"");
+
+			} else if (command == L"ASSOCIATESMNUMBERTHUMBURL") {
+				return new CNode_Command(CMD_ASSOCIATESMNUMBERTHUMBURL, L"", L"");
+
 			} else {
 
                 // Unknown command

@@ -38,6 +38,7 @@
 #include "WinHTTPWrapper.h"
 #include "NicoCacheManager.h"
 #include "MediaInfo.h"
+#include "NicoDatabase.h"
 
 // グローバル変数
 CAppModule _Module;
@@ -45,6 +46,11 @@ CAppModule _Module;
 
 int Run(LPTSTR /*lpstrCmdLine*/ = NULL, int nCmdShow = SW_SHOWDEFAULT)
 {
+	// alt 押しながら起動でサムネイル取得
+	if (::GetAsyncKeyState(VK_MENU) < 0) {
+		DownloadThumbDataWhereIsNULL();
+	}
+
 	CProxy	proxy;
 	proxy.OpenProxyPort(CSettings::s_proxyPort);
 

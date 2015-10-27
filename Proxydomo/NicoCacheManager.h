@@ -64,6 +64,9 @@ struct VideoConvertItem
 	{}
 };
 
+boost::optional<std::pair<int, int>>	GetDLCountAndClientDLCompleteCount(const std::string& smNumber);
+void	DownloadThumbDataWhereIsNULL();
+
 class CNicoCacheManager;
 
 //////////////////////////////////////////////////////////////
@@ -178,6 +181,9 @@ public:
 	static std::wstring Get_smNumberTitle(const std::string& smNumber);
 	static std::string Get_smNumberMovieURL(const std::string& smNumber);
 
+	static void Associate_smNumberThumbURL(const std::string& smNumber, const std::string& thumbURL);
+	static std::string Get_smNumberThumbURL(const std::string& smNumber);
+
 	static std::wstring FailFound(const std::string& smNumber);
 
 
@@ -261,6 +267,9 @@ private:
 
 	static CCriticalSection s_csvideoConvertList;
 	static std::list<VideoConvertItem> s_videoConvertList;
+
+	static CCriticalSection s_cs_smNumberThumbURL;
+	static std::unordered_map<std::string, std::string>	s_map_smNumberThumbURL;
 
 
 	static CCriticalSection s_csCacheGetThumbInfo;

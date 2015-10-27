@@ -1405,6 +1405,26 @@ const UChar* CNode_Command::match(const UChar* start, const UChar* stop, MatchDa
 	}
 	break;
 
+	case CMD_DLCOUNTANDCLIENTDOCOMPLETE:
+	{
+		std::string smNumber = UTF8fromUTF16(filter.memoryTable[1].getValue());
+		if (auto pair = GetDLCountAndClientDLCompleteCount(smNumber)) {
+			std::wstring place3 = (boost::wformat(L"%1%/%2%") % pair->second % pair->first).str();
+			filter.memoryTable[3](place3);
+			filter.memoryTable[5](L"1");
+		}
+	}
+	break;
+
+	case CMD_ASSOCIATESMNUMBERTHUMBURL:
+	{
+		std::string smNumber = UTF8fromUTF16(filter.memoryTable[1].getValue());
+		std::string thumbURL = UTF8fromUTF16(filter.memoryTable[2].getValue());
+		thumbURL = CUtil::replaceAll(thumbURL, "\\", "");
+		CNicoCacheManager::Associate_smNumberThumbURL(smNumber, thumbURL);
+	}
+	break;
+
 	default:
 		ATLASSERT(FALSE);
     

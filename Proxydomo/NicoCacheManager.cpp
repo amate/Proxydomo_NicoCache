@@ -12,6 +12,7 @@
 #include <boost\format.hpp>
 #include <Mmsystem.h>
 #pragma comment(lib, "Winmm.lib")
+#include <atlenc.h>
 #include "proximodo\util.h"
 #include "RequestManager.h"
 #include "Logger.h"
@@ -21,6 +22,8 @@
 #include "ptreeWrapper.h"
 #include "timer.h"
 #include "HttpOperate.h"
+#include "NicoDatabase.h"
+#include "WinHTTPWrapper.h"
 
 using namespace CodeConvert;
 using namespace std::chrono;
@@ -31,6 +34,8 @@ using namespace std::chrono;
 
 
 namespace {
+
+	CNicoDatabase	g_nicoDatabase;
 
 
 	// 動画を保存するキャッシュフォルダのパスを返す(最後に'\'が付く)
@@ -325,9 +330,65 @@ namespace {
 		std::wstring m_completeLowCachePath;
 	};
 
-
 }	// namespace
 
+
+std::string	GetThumbData(const std::string& thumbURL)
+{
+	std::wstring url = UTF16fromUTF8(thumbURL);
+	std::wregex rx(L"http://[^.]+\\.smilevideo\\.jp/smile\\?i=(.*)");
+	std::wsmatch result;
+	if (std::regex_match(url, result, rx) == false) {
+		ATLASSERT(FALSE);
+		return "";
+	}
+
+	std::wstring number = result.str(1);
+	std::wstring thumbCachePath = GetThumbCachePath(number);
+
+	if (thumbCachePath.length() > 0) {
+		CString ext = Misc::GetFileExt(thumbCachePath.c_str());
+		ext.MakeLower();
+		if (ext != L"incomplete") {
+			std::string thumbData = LoadFile(thumbCachePath);
+			return thumbData;
+		}
+	}
+
+	if (auto value = WinHTTPWrapper::HttpDownloadData(url.c_str())) {
+		WinHTTPWrapper::TermWinHTTP();
+
+		return *value;
+	}
+
+	return "";
+}
+
+std::string GetThumbURL(const std::string& smNumber)
+{
+	std::string getThumbURL = "http://ext.nicovideo.jp/api/getthumbinfo/" + smNumber;
+	if (auto value = WinHTTPWrapper::HttpDownloadData(getThumbURL.c_str())) {
+		std::string body = value.get();
+		std::regex rx("<thumbnail_url>([^<]+)</thumbnail_url>");
+		std::smatch result;
+		if (std::regex_search(body, result, rx)) {
+			std::string thumbURL = result[1].str();
+			return thumbURL;
+		}
+	}
+	ATLASSERT(FALSE);
+	return "";
+}
+
+boost::optional<std::pair<int, int>>	GetDLCountAndClientDLCompleteCount(const std::string& smNumber)
+{
+	return g_nicoDatabase.GetDLCountAndClientDLCompleteCount(smNumber);
+}
+
+void	DownloadThumbDataWhereIsNULL()
+{
+	g_nicoDatabase.DownloadThumbDataWhereIsNULL();
+}
 
 ///////////////////////////////////////////////////
 // CNicoMovieCacheManager
@@ -546,6 +607,24 @@ void CNicoMovieCacheManager::Manage()
 		bLowRequest = true;
 	}
 
+	std::wstring title = CNicoCacheManager::Get_smNumberTitle(m_smNumber);
+	if (g_nicoDatabase.AddNicoHistory(m_smNumber, UTF8fromUTF16(title))) {
+		std::string thumbURL = CNicoCacheManager::Get_smNumberThumbURL(m_smNumber);
+		if (thumbURL.empty()) {
+			thumbURL = GetThumbURL(m_smNumber);
+		}
+		ATLASSERT(thumbURL.length() > 0);
+		std::string thumbData = GetThumbData(thumbURL + ".M");
+		if (thumbData.empty()) {
+			thumbData = GetThumbData(thumbURL);
+		}
+		if (thumbData.length() > 0) {
+			g_nicoDatabase.SetThumbData(m_smNumber, thumbData.data(), static_cast<int>(thumbData.size()));
+		} else {
+			ATLASSERT(FALSE);
+		}
+	}
+
 	CCacheFileManager cacheFileManager(m_smNumber, bLowRequest);
 	if (cacheFileManager.SearchCache()) {
 
@@ -686,6 +765,7 @@ void CNicoMovieCacheManager::Manage()
 
 	bool debugSizeCheck = false;
 	bool isAddDLedList = false;
+	bool clientDLComplete = false;
 	steady_clock::time_point lastTime;
 	boost::optional<steady_clock::time_point> optboostTimeCountStart = steady_clock::now();
 	for (;;) {
@@ -804,6 +884,11 @@ void CNicoMovieCacheManager::Manage()
 							INFO_LOG << browserRangeRequest.GetID() << L" browser close";
 							browserRangeRequest.sockBrowser->Close();
 							suicideList.emplace_back(browserRangeRequest.itThis);
+
+							if (browserRangeRequest.rangeBufferPos == m_movieSize && clientDLComplete == false) {
+								g_nicoDatabase.ClientDLComplete(m_smNumber);
+								clientDLComplete = true;
+							}
 						}
 					} else {
 						//INFO_LOG << L"RangeBufferPos : " << m_rangeBufferPos << L" bufferSize : " << bufferSize;
@@ -947,6 +1032,9 @@ std::list<DLedNicoCache> CNicoCacheManager::s_vecDLedNicoCacheManager;
 
 CCriticalSection CNicoCacheManager::s_csvideoConvertList;
 std::list<VideoConvertItem> CNicoCacheManager::s_videoConvertList;
+
+CCriticalSection CNicoCacheManager::s_cs_smNumberThumbURL;
+std::unordered_map<std::string, std::string>	CNicoCacheManager::s_map_smNumberThumbURL;
 
 
 CCriticalSection CNicoCacheManager::s_csCacheGetThumbInfo;
@@ -1207,6 +1295,23 @@ std::string CNicoCacheManager::Get_smNumberMovieURL(const std::string& smNumber)
 		return "";
 	}
 
+}
+
+void CNicoCacheManager::Associate_smNumberThumbURL(const std::string& smNumber, const std::string& thumbURL)
+{
+	ATLASSERT(thumbURL.size() > 0);
+	CCritSecLock lock(s_cs_smNumberThumbURL);
+	s_map_smNumberThumbURL.insert(std::make_pair(smNumber, thumbURL));
+}
+
+std::string CNicoCacheManager::Get_smNumberThumbURL(const std::string& smNumber)
+{
+	auto it = s_map_smNumberThumbURL.find(smNumber);
+	if (it != s_map_smNumberThumbURL.end()) {
+		return it->second;
+	}
+	ATLASSERT(FALSE);
+	return "";
 }
 
 extern const std::wstring kGetThumbInfoURL;
@@ -1631,7 +1736,54 @@ bool CNicoCacheManager::IsNicoCacheServerRequest(const CUrl& url)
 
 void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::unique_ptr<CSocket>& sockBrowser)
 {
+	
 	std::wstring query = filterOwner.url.getQuery();
+	if (query.find(L"nicoHistory") != std::wstring::npos) {
+		auto nicoHistoryList = g_nicoDatabase.QueryNicoHistoryList();
+
+		timer processTimer;
+		std::string json;
+		json += R"({"NicoHistory":[)";
+		for (auto it = nicoHistoryList.cbegin(); it != nicoHistoryList.cend(); ++it) {
+			auto& nicoHistory = *it;
+			json += "{";
+			json += R"("smNumber":")" + nicoHistory.smNumber + R"(",)";
+			json += R"("title":")" + nicoHistory.title + R"(",)";
+			json += R"("DLCount":")" + std::to_string(nicoHistory.DLCount) + R"(",)";
+			json += R"("ClientDLCompleteCount":")" + std::to_string(nicoHistory.ClientDLCompleteCount) + R"(",)";
+			json += R"("lastAccessTime":")" + nicoHistory.lastAccessTime + R"(",)";
+
+			if (nicoHistory.thumbData.size() > 0) {
+				int base64length = Base64EncodeGetRequiredLength(static_cast<int>(nicoHistory.thumbData.size()), ATL_BASE64_FLAG_NOCRLF);
+				std::vector<char> base64image(base64length);
+				BOOL bRet = Base64Encode((const BYTE*)nicoHistory.thumbData.data(), static_cast<int>(nicoHistory.thumbData.size()), base64image.data(), &base64length, ATL_BASE64_FLAG_NOCRLF);
+				ATLASSERT(bRet);
+				ATLASSERT(base64length == base64image.size());
+
+				json += R"("thumbData":"data:image/jpeg;base64,)";
+				json.append(base64image.data(), base64image.size());
+				json += R"(")";
+			} else {
+				json += R"("thumbData":"")";
+			}
+
+			json += "}";
+			if (std::next(it) != nicoHistoryList.cend()) {
+				json += ",";
+			}
+		}
+		json += R"(]})";
+
+		INFO_LOG << L"nicocache_api?nicoHistory " << processTimer.format();
+
+		HeadPairList inHeaders;
+		CFilterOwner::SetHeader(inHeaders, L"Content-Type", L"application/json; charset=utf-8");
+		CFilterOwner::SetHeader(inHeaders, L"Content-Length", std::to_wstring(json.size()));
+		CFilterOwner::SetHeader(inHeaders, L"Connection", L"keep-alive");
+
+		SendHTTPOK_Response(sockBrowser.get(), inHeaders, json);
+		return;
+	}
 	auto pos = query.find(L"videoConvert_smNumber=");
 	if (pos != std::wstring::npos) {
 		std::string convert_smNumber = UTF8fromUTF16(query.substr(pos + wcslen(L"videoConvert_smNumber=")));
@@ -1963,6 +2115,15 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 		if (s_cacheGetThumbInfo.first != smNumber) {
 
 			std::string body = GetHTTPPage(filterOwner);
+			std::regex rx("<thumbnail_url>([^<]+)</thumbnail_url>");
+			std::smatch result;
+			if (std::regex_search(body, result, rx)) {
+				std::string thumbURL = result[1].str();
+				Associate_smNumberThumbURL(smNumber, thumbURL);
+			} else {
+				ATLASSERT(FALSE);
+			}
+
 			std::string sendInBuf = SendResponse(filterOwner, sockBrowser.get(), body);
 
 			s_cacheGetThumbInfo.first = smNumber;

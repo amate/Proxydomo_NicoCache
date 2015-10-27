@@ -204,6 +204,9 @@
     <ClCompile Include="HttpOperate.cpp">
       <Filter>Header Files</Filter>
     </ClCompile>
+    <ClCompile Include="NicoDatabase.cpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">
@@ -431,6 +434,9 @@
     <ClInclude Include="HttpOperate.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="NicoDatabase.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Proxydomo.rc">
@@ -456,5 +462,8 @@
     <Image Include="res\WebFilter.ico">
       <Filter>Resource Files</Filter>
     </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
   </ItemGroup>
 </Project>
