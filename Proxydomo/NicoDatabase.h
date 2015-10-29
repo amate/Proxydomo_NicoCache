@@ -22,6 +22,13 @@ struct NicoHistory
 	{}
 };
 
+enum class NicoListQuery
+{
+	kDownloadOrderDesc,
+	kClientDLIncompleteOrderDesc,
+	kLastAccessTimerOrderDesc,
+};
+
 class CNicoDatabase
 {
 public:
@@ -33,7 +40,7 @@ public:
 	boost::optional<std::pair<int, int>>	GetDLCountAndClientDLCompleteCount(const std::string& smNumber);
 	void	SetThumbData(const std::string& smNumber, const char* data, int size);
 
-	std::list<NicoHistory>	QueryNicoHistoryList();
+	std::list<NicoHistory>	QueryNicoHistoryList(NicoListQuery query);
 
 	void	DownloadThumbDataWhereIsNULL();
 

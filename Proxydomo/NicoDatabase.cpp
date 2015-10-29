@@ -120,7 +120,7 @@ std::string GetThumbURL(const std::string& smNumber);
 CNicoDatabase::CNicoDatabase() : m_db(nullptr)
 {
 	CString dbPath =  Misc::GetExeDirectory() + kDatabaseName;
-	int err = sqlite3_open((LPSTR)CT2A(dbPath), &m_db);
+	int err = sqlite3_open16((LPCWSTR)dbPath, &m_db);
 	if (err != SQLITE_OK) {
 		ERROR_LOG << L"sqlite3_open failed";
 		throw std::runtime_error("sqlite3_open failed");
@@ -234,14 +234,36 @@ void	CNicoDatabase::SetThumbData(const std::string& smNumber, const char* data, 
 }
 
 
-std::list<NicoHistory>	CNicoDatabase::QueryNicoHistoryList()
+std::list<NicoHistory>	CNicoDatabase::QueryNicoHistoryList(NicoListQuery query)
 {
 	std::list<NicoHistory> nicoHistoryList;
 
+	std::string order;
+	switch (query)
+	{
+	case NicoListQuery::kDownloadOrderDesc:
+		order = "ORDER BY ROWID DESC";
+		break;
+
+	case NicoListQuery::kClientDLIncompleteOrderDesc:
+		order = "WHERE ClientDLCompleteCount = 0 ORDER BY ROWID DESC";
+		break;
+
+	case NicoListQuery::kLastAccessTimerOrderDesc:
+		order = "ORDER BY lastAccessTime DESC";
+		break;
+
+	default:
+		ATLASSERT(FALSE);
+		throw std::runtime_error("no NicoListQuery");
+	}
+
 	CCritSecLock lock(m_cs);
-	CSQLiteStatement stmt(m_db, 
-		R"(SELECT smNumber, title, DLCount, ClientDLCompleteCount, lastAccessTime, thumbData 
-			FROM nicoHistory ORDER BY ROWID DESC;)");
+	std::string sql = R"(SELECT smNumber, title, DLCount, ClientDLCompleteCount, lastAccessTime, thumbData 
+			FROM nicoHistory )";
+	sql += order;
+	CSQLiteStatement stmt(m_db, sql.c_str());
+
 	int err;
 	while ((err = stmt.Step()) == SQLITE_ROW) {
 		std::string smNumber = stmt.ColumnText(0);
@@ -273,8 +295,11 @@ void	CNicoDatabase::DownloadThumbDataWhereIsNULL()
 				INFO_LOG << L"DownloadThumbDataWhereIsNULL SetThumbData smNumber : " << smNumber;
 			} else {
 				ATLASSERT(FALSE);
-				ERROR_LOG << L"DownloadThumbDataWhereIsNULL failed smNumber : " << smNumber;
+				ERROR_LOG << L"DownloadThumbDataWhereIsNULL no thumbData failed smNumber : " << smNumber;
 			}
+		} else {
+			ATLASSERT(FALSE);
+			ERROR_LOG << L"DownloadThumbDataWhereIsNULL no thumbURL failed smNumber : " << smNumber;
 		}
 	}
 }

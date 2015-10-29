@@ -356,8 +356,6 @@ std::string	GetThumbData(const std::string& thumbURL)
 	}
 
 	if (auto value = WinHTTPWrapper::HttpDownloadData(url.c_str())) {
-		WinHTTPWrapper::TermWinHTTP();
-
 		return *value;
 	}
 
@@ -485,13 +483,13 @@ void	CNicoMovieCacheManager::_CreateTransactionData(const std::string& smNumber)
 	std::wstring transName;
 	CCacheFileManager cacheFileManager(smNumber, bLowRequest);
 	if (cacheFileManager.SearchCache() && cacheFileManager.IsLoadCacheComplete()) {
-		transName = cacheFileManager.LoadCachePath();
+		transName = (LPCWSTR)Misc::GetFileBaseNoExt(cacheFileManager.LoadCachePath().c_str());
 	} else {
 		transName = CreateCacheFilePath(smNumber, bLowRequest);
+		auto slashPos = transName.rfind(L'\\');
+		ATLASSERT(slashPos != std::wstring::npos);
+		transName = transName.substr(slashPos + 1);
 	}
-	auto slashPos = transName.rfind(L'\\');
-	ATLASSERT(slashPos != std::wstring::npos);
-	transName = transName.substr(slashPos + 1);
 	m_transactionData = CNicoCacheManager::CreateTransactionData(transName);
 }
 
@@ -510,7 +508,7 @@ void	CNicoMovieCacheManager::NewBrowserConnection(CFilterOwner& filterOwner, std
 void	CNicoMovieCacheManager::_InitRangeSetting(BrowserRangeRequest& browserRangeRequest)
 {
 	std::wstring range = CFilterOwner::GetHeader(browserRangeRequest.filterOwner.outHeaders, L"Range");
-	INFO_LOG << L"_InitRangeSetting : " << browserRangeRequest.GetID();
+	//INFO_LOG << L"_InitRangeSetting : " << browserRangeRequest.GetID();
 
 	if (range.empty()) {	// Range リクエストではない
 		browserRangeRequest.browserRangeBegin = 0;
@@ -610,17 +608,19 @@ void CNicoMovieCacheManager::Manage()
 	std::wstring title = CNicoCacheManager::Get_smNumberTitle(m_smNumber);
 	if (g_nicoDatabase.AddNicoHistory(m_smNumber, UTF8fromUTF16(title))) {
 		std::string thumbURL = CNicoCacheManager::Get_smNumberThumbURL(m_smNumber);
-		if (thumbURL.empty()) {
-			thumbURL = GetThumbURL(m_smNumber);
-		}
-		ATLASSERT(thumbURL.length() > 0);
-		std::string thumbData = GetThumbData(thumbURL + ".M");
-		if (thumbData.empty()) {
-			thumbData = GetThumbData(thumbURL);
-		}
-		if (thumbData.length() > 0) {
-			g_nicoDatabase.SetThumbData(m_smNumber, thumbData.data(), static_cast<int>(thumbData.size()));
+		if (thumbURL.length() > 0) {
+			std::string thumbData = GetThumbData(thumbURL + ".M");
+			if (thumbData.empty()) {
+				thumbData = GetThumbData(thumbURL);
+			}
+			if (thumbData.length() > 0) {
+				g_nicoDatabase.SetThumbData(m_smNumber, thumbData.data(), static_cast<int>(thumbData.size()));
+			} else {
+				ERROR_LOG << m_smNumber << L" no thumbData";
+				ATLASSERT(FALSE);
+			}
 		} else {
+			ERROR_LOG << m_smNumber << L" no thumbURL";
 			ATLASSERT(FALSE);
 		}
 	}
@@ -745,12 +745,12 @@ void CNicoMovieCacheManager::Manage()
 		}
 		INFO_LOG << m_smNumber << L" ファイルサイズ : " << m_movieSize;
 		m_transactionData->fileSize = m_movieSize;
+		m_transactionData->oldDLPos = m_movieCacheBuffer.size();
 
 		fs.write(buffer.c_str(), buffer.size());
 		m_movieCacheBuffer += buffer;
 		m_lastMovieSize = m_movieCacheBuffer.size();
 		m_transactionData->lastDLPos = m_lastMovieSize;
-		m_transactionData->oldDLPos = m_lastMovieSize;
 
 		if (m_optNicoRequestData) {
 			nicoRequestData = m_optNicoRequestData.get();
@@ -767,7 +767,13 @@ void CNicoMovieCacheManager::Manage()
 	bool isAddDLedList = false;
 	bool clientDLComplete = false;
 	steady_clock::time_point lastTime;
-	boost::optional<steady_clock::time_point> optboostTimeCountStart = steady_clock::now();
+	boost::optional<steady_clock::time_point> optboostTimeCountStart;
+	// クライアントダウンロード時のみboostを掛ける
+	if (m_browserRangeRequestList.size() > 0) {
+		optboostTimeCountStart = steady_clock::now();
+	}
+	int	boostCount = 0;
+	enum { kMaxBoostCount = 2 };
 	for (;;) {
 		{
 			CCritSecLock lock(m_csBrowserRangeRequestList);
@@ -779,7 +785,7 @@ void CNicoMovieCacheManager::Manage()
 				_SendResponseHeader(browserRangeRequest);
 
 				lastTime = steady_clock::time_point();
-				INFO_LOG << browserRangeRequest.GetID() << L" browser request";
+				//INFO_LOG << browserRangeRequest.GetID() << L" browser request";
 			}
 		}
 
@@ -827,7 +833,7 @@ void CNicoMovieCacheManager::Manage()
 		} else {
 			if (debugSizeCheck == false) {
 				if (m_movieCacheBuffer.size() != m_movieSize) {
-					ERROR_LOG << L"サイトとの接続が切れたが、ファイルをすべてDLできませんでした...";
+					ERROR_LOG << m_smNumber << L" サイトとの接続が切れたが、ファイルをすべてDLできませんでした...";
 
 					if (_RetryDownload(nicoRequestData, fs)) {
 						continue;
@@ -861,7 +867,7 @@ void CNicoMovieCacheManager::Manage()
 					continue;
 
 				if (browserRangeRequest.sockBrowser->IsConnected() == false) {
-					INFO_LOG << browserRangeRequest.GetID() << L" browser disconnection";
+					//INFO_LOG << browserRangeRequest.GetID() << L" browser disconnection";
 					suicideList.emplace_back(browserRangeRequest.itThis);
 
 				} else {
@@ -881,7 +887,7 @@ void CNicoMovieCacheManager::Manage()
 						browserData->rangeBufferPos = browserRangeRequest.rangeBufferPos;
 
 						if (browserRangeRequest.rangeBufferPos > browserRangeRequest.browserRangeEnd) {	// 終わり
-							INFO_LOG << browserRangeRequest.GetID() << L" browser close";
+							//INFO_LOG << browserRangeRequest.GetID() << L" browser close";
 							browserRangeRequest.sockBrowser->Close();
 							suicideList.emplace_back(browserRangeRequest.itThis);
 
@@ -910,7 +916,7 @@ void CNicoMovieCacheManager::Manage()
 				if (lastTime == steady_clock::time_point()) {
 					lastTime = steady_clock::now();
 				} else {
-					if ((steady_clock::now() - lastTime) > seconds(30)) {
+					if ((steady_clock::now() - lastTime) > minutes(3)) {
 						SwitchToInvalid();
 					}
 				}
@@ -945,9 +951,15 @@ void CNicoMovieCacheManager::Manage()
 		if (optboostTimeCountStart && m_sockWebsite && m_sockWebsite->IsConnected() && fs &&
 			((steady_clock::now() - *optboostTimeCountStart) > seconds(10))) 
 		{
-			INFO_LOG << m_smNumber << L" boost retry download";
-			_RetryDownload(nicoRequestData, fs);
-			optboostTimeCountStart.reset();
+			++boostCount;
+			if (boostCount <= kMaxBoostCount) {
+				INFO_LOG << m_smNumber << L" boost retry download";
+				_RetryDownload(nicoRequestData, fs);
+				optboostTimeCountStart = steady_clock::now();
+
+			} else {
+				optboostTimeCountStart.reset();	// boost stop
+			}
 		}
 	}	// for(;;)
 
@@ -1306,9 +1318,15 @@ void CNicoCacheManager::Associate_smNumberThumbURL(const std::string& smNumber, 
 
 std::string CNicoCacheManager::Get_smNumberThumbURL(const std::string& smNumber)
 {
+	CCritSecLock lock(s_cs_smNumberThumbURL);
 	auto it = s_map_smNumberThumbURL.find(smNumber);
 	if (it != s_map_smNumberThumbURL.end()) {
 		return it->second;
+	}
+	std::string thumbURL = GetThumbURL(smNumber);
+	if (thumbURL.length() > 0) {
+		s_map_smNumberThumbURL.insert(std::make_pair(smNumber, thumbURL));
+		return thumbURL;
 	}
 	ATLASSERT(FALSE);
 	return "";
@@ -1738,8 +1756,23 @@ void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::un
 {
 	
 	std::wstring query = filterOwner.url.getQuery();
-	if (query.find(L"nicoHistory") != std::wstring::npos) {
-		auto nicoHistoryList = g_nicoDatabase.QueryNicoHistoryList();
+	auto nicoHistoryPos = query.find(L"nicoHistory");
+	if (nicoHistoryPos != std::wstring::npos) {
+		NicoListQuery queryOrder = NicoListQuery::kDownloadOrderDesc;
+		auto orderPos = query.find(L"&order=");
+		if (orderPos != std::wstring::npos) {
+			std::wstring strOrder = query.substr(orderPos + wcslen(L"&order="));
+			if (strOrder == L"DownloadOrderDesc") {
+				queryOrder = NicoListQuery::kDownloadOrderDesc;
+			} else if (strOrder == L"ClientDLIncompleteOrderDesc") {
+				queryOrder = NicoListQuery::kClientDLIncompleteOrderDesc;
+			} else if (strOrder == L"LastAccessTimerOrderDesc") {
+				queryOrder = NicoListQuery::kLastAccessTimerOrderDesc;
+			} else {
+				ATLASSERT(FALSE);
+			}
+		}
+		auto nicoHistoryList = g_nicoDatabase.QueryNicoHistoryList(queryOrder);
 
 		timer processTimer;
 		std::string json;
@@ -1774,7 +1807,7 @@ void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::un
 		}
 		json += R"(]})";
 
-		INFO_LOG << L"nicocache_api?nicoHistory " << processTimer.format();
+		//INFO_LOG << L"nicocache_api?nicoHistory " << processTimer.format();
 
 		HeadPairList inHeaders;
 		CFilterOwner::SetHeader(inHeaders, L"Content-Type", L"application/json; charset=utf-8");

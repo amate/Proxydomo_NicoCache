@@ -365,7 +365,7 @@ bool	CSocket::Write(const char* buffer, int length)
 		if (ret == SOCKET_ERROR && wsaError == WSAEWOULDBLOCK && m_writeStop == false) {
 			++trycount;
 			if (kMaxRetryCount < trycount) {
-				ERROR_LOG << L"CSocket::Write : max retry";
+				//ERROR_LOG << L"CSocket::Write : max retry";
 				break;
 			}
 

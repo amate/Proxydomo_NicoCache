@@ -231,7 +231,7 @@ void	CTransactionView::_UpdateListInfo()
 			int64_t nProgressMargin = data.lastDLPos - data.oldDLPos;
 			data.oldDLPos = data.lastDLPos;
 
-			if (data.deqProgressAndTime.size() >= 10)
+			if (data.deqProgressAndTime.size() >= 5)
 				data.deqProgressAndTime.pop_front();
 			data.deqProgressAndTime.push_back(std::make_pair(nProgressMargin, dwTimeMargin));
 			nProgressMargin = 0;
