@@ -46,6 +46,9 @@ CAppModule _Module;
 
 int Run(LPTSTR /*lpstrCmdLine*/ = NULL, int nCmdShow = SW_SHOWDEFAULT)
 {
+	// init
+	CNicoDatabase::GetInstance();
+
 	// alt 押しながら起動でサムネイル取得
 	if (::GetAsyncKeyState(VK_MENU) < 0) {
 		DownloadThumbDataWhereIsNULL();

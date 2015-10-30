@@ -263,7 +263,9 @@
     <ClCompile Include="MediaInfo.cpp" />
     <ClCompile Include="Misc.cpp" />
     <ClCompile Include="NicoCacheManager.cpp" />
+    <ClCompile Include="NicoCacheMisc.cpp" />
     <ClCompile Include="NicoDatabase.cpp" />
+    <ClCompile Include="NicoMovieCacheManager.cpp" />
     <ClCompile Include="Nodes_.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
@@ -528,7 +530,9 @@
     <ClInclude Include="MediaInfo.h" />
     <ClInclude Include="Misc.h" />
     <ClInclude Include="NicoCacheManager.h" />
+    <ClInclude Include="NicoCacheMisc.h" />
     <ClInclude Include="NicoDatabase.h" />
+    <ClInclude Include="NicoMovieCacheManager.h" />
     <ClInclude Include="Node.h" />
     <ClInclude Include="Nodes.h" />
     <ClInclude Include="OptionDialog.h" />

@@ -32,8 +32,8 @@ enum class NicoListQuery
 class CNicoDatabase
 {
 public:
-	CNicoDatabase();
-	~CNicoDatabase();
+	// CNicoDatabase::GetInstance()
+	static CNicoDatabase&	GetInstance();
 
 	bool	AddNicoHistory(const std::string& smNumber, const std::string& title);
 	void	ClientDLComplete(const std::string& smNumber);
@@ -45,6 +45,9 @@ public:
 	void	DownloadThumbDataWhereIsNULL();
 
 private:
+	CNicoDatabase();
+	~CNicoDatabase();
+
 	sqlite3*	m_db;
 	CCriticalSection	m_cs;
 };

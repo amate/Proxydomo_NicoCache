@@ -24,6 +24,7 @@
 #include "HttpOperate.h"
 #include "NicoDatabase.h"
 #include "WinHTTPWrapper.h"
+#include "NicoCacheMisc.h"
 
 using namespace CodeConvert;
 using namespace std::chrono;
@@ -35,995 +36,19 @@ using namespace std::chrono;
 
 namespace {
 
-	CNicoDatabase	g_nicoDatabase;
-
-
-	// 動画を保存するキャッシュフォルダのパスを返す(最後に'\'が付く)
-	std::wstring GetCacheFolderPath()
-	{
-		return std::wstring(Misc::GetExeDirectory() + L"nico_cache\\");
-	}
-
-	// キャッシュフォルダからsmNumberの動画を探してパスを返す
-	std::wstring Get_smNumberFilePath(const std::string& smNumber)
-	{
-		std::wstring searchPath = GetCacheFolderPath() + UTF16fromUTF8(smNumber) + L"*";
-		WIN32_FIND_DATA fd = {};
-		HANDLE hFind = ::FindFirstFile(searchPath.c_str(), &fd);
-		if (hFind == INVALID_HANDLE_VALUE) {
-			return L"";
-		} else {
-			FindClose(hFind);
-
-			std::wstring filePath = GetCacheFolderPath() + fd.cFileName;
-			return filePath;
-		}
-	}
-
-	// サムネイルキャッシュフォルダのパスを返す(最後に'\'が付く)
-	std::wstring GetThumbCacheFolderPath()
-	{
-		return std::wstring(Misc::GetExeDirectory() + L"nico_cache\\thumb_cache\\");
-	}
-
-	// サムネイルキャッシュフォルダからnumberのファイルを探してパスを返す
-	std::wstring GetThumbCachePath(const std::wstring& number)
-	{
-		std::wstring searchPath = GetThumbCacheFolderPath() + number + L".jpg*";
-		WIN32_FIND_DATA fd = {};
-		HANDLE hFind = ::FindFirstFile(searchPath.c_str(), &fd);
-		if (hFind == INVALID_HANDLE_VALUE) {
-			return L"";
-		} else {
-			FindClose(hFind);
-
-			std::wstring filePath = GetThumbCacheFolderPath() + fd.cFileName;
-			return filePath;
-		}
-	}
-
-	// smNumberの保存先へのパスを返す(拡張子はつけない)
-	std::wstring CreateCacheFilePath(const std::string& smNumber, bool bLowReqeust)
-	{
-		std::wstring cachePath = GetCacheFolderPath() + UTF16fromUTF8(smNumber);
-		if (bLowReqeust) {
-			cachePath += L"low";
-		}
-		std::wstring title = CNicoCacheManager::Get_smNumberTitle(smNumber);
-		ATLASSERT(title.size());
-		cachePath += L"_" + title;
-		return cachePath;
-	}
-
-
-	/// ファイル作成時の無効な文字を置換する
-	void MtlValidateFileName(std::wstring& strName, LPCTSTR replaceChar = _T("-"))
-	{
-		strName = CUtil::replaceAll(strName, L"\\", replaceChar);
-		strName = CUtil::replaceAll(strName, L"/", L"／");
-		strName = CUtil::replaceAll(strName, L":", L"：");
-		strName = CUtil::replaceAll(strName, L"*", L"＊");
-		strName = CUtil::replaceAll(strName, L"?", L"？");
-		strName = CUtil::replaceAll(strName, L"\"", L"'");
-		strName = CUtil::replaceAll(strName, L"<", L"＜");
-		strName = CUtil::replaceAll(strName, L">", L"＞");
-		strName = CUtil::replaceAll(strName, L"|", L"｜");
-
-		strName = CUtil::replaceAll(strName, L"&amp;", L"&");
-		strName = CUtil::replaceAll(strName, L"&quot;", L"'");
-	}
-
-	// ファイル内容を読み込み
-	std::string LoadFile(const std::wstring& filePath)
-	{
-		std::ifstream fscache(filePath, std::ios::in | std::ios::binary);
-		if (!fscache)
-			throw std::runtime_error("file open failed : " + std::string(CW2A(filePath.c_str())));
-
-		std::string data;
-		fscache.seekg(0, std::ios::end);
-		streamoff fileSize = fscache.tellg();
-		fscache.seekg(0, std::ios::beg);
-		fscache.clear();
-		data.resize(static_cast<size_t>(fileSize));
-		fscache.read(const_cast<char*>(data.data()), static_cast<size_t>(fileSize));
-		fscache.close();
-
-		return data;
-	}
-
-	CCriticalSection g_csReduceCache;
-
-	// キャッシュした全動画のファイルサイズが一定以下になるように
-	// 古い動画から削除していく
-	void ReduceCache()
-	{
-		CCritSecLock lock(g_csReduceCache);
-
-		std::list<std::pair<CString, WIN32_FIND_DATA>> cacheFileList;
-		ForEachFileWithAttirbutes(GetCacheFolderPath().c_str(), [&cacheFileList](const CString& filePath, WIN32_FIND_DATA fd) {
-			CString fileName = fd.cFileName;
-			if (fileName.Left(1) == _T("#"))
-				return;
-			if (fileName.Left(2) != _T("sm"))
-				return;
-
-			cacheFileList.emplace_back(filePath, fd);
-		});
-
-		// ファイル作成日時の一番古いファイルを一番上にする
-		cacheFileList.sort([](const std::pair<CString, WIN32_FIND_DATA>& first, const std::pair<CString, WIN32_FIND_DATA>& second) -> bool {
-			auto funcFileTimeToUINT64 = [](FILETIME ft) {
-				return static_cast<uint64_t>(ft.dwHighDateTime) << 32 | ft.dwLowDateTime;
-			};
-			uint64_t firstCreationTime = funcFileTimeToUINT64(first.second.ftCreationTime);
-			uint64_t secondCreationTime = funcFileTimeToUINT64(second.second.ftCreationTime);
-			return firstCreationTime < secondCreationTime;
-		});
-
-		auto funcFileSize = [](const WIN32_FIND_DATA& fd) {
-			return static_cast<uint64_t>(fd.nFileSizeHigh) << 32 | fd.nFileSizeLow;
-		};
-
-		uint64_t totalCacheSize = std::accumulate(cacheFileList.begin(), cacheFileList.end(), static_cast<uint64_t>(0), 
-			[funcFileSize](uint64_t sum, std::pair<CString, WIN32_FIND_DATA>& file) -> uint64_t {
-
-				return sum + funcFileSize(file.second);
-		});
-
-		const uint64_t kMaxCacheSize = 30ui64 * 1024ui64 * 1024ui64 * 1024ui64;	// 30GB
-		WCHAR strTotalCacheSize[64];
-		::StrFormatByteSizeW(totalCacheSize, strTotalCacheSize, 64);
-		WCHAR strMaxCacheSize[64];
-		::StrFormatByteSizeW(kMaxCacheSize, strMaxCacheSize, 64);
-		INFO_LOG << L"ReduceCache totalCacheSize : " << strTotalCacheSize << L" / " << strMaxCacheSize;
-
-		if (kMaxCacheSize < totalCacheSize) {
-			do {
-				if (cacheFileList.empty())
-					break;
-
-				auto& cacheFile = cacheFileList.front();
-				INFO_LOG << L"ReduceCache DeleteFile : " << (LPCTSTR)cacheFile.first;
-				::DeleteFile(cacheFile.first);
-				totalCacheSize -= funcFileSize(cacheFile.second);
-				cacheFileList.erase(cacheFileList.begin());
-
-			} while (kMaxCacheSize < totalCacheSize);
-		}
-		
-	}
-
-
-
-	class CCacheFileManager
-	{
-	public:
-		CCacheFileManager(const std::string& smNumber, bool bLowRequest) :
-			m_smNumber(smNumber), m_bLowRequest(bLowRequest), m_cacheComplete(false), m_lowCacheComplete(false)
-		{}
-
-		bool	SearchCache()
-		{
-			std::wstring cachePath = Get_smNumberFilePath(m_smNumber + "_");
-			if (cachePath.empty()) {
-				cachePath = Get_smNumberFilePath("#" + m_smNumber + "_");
-			}
-			std::wstring lowCachePath = Get_smNumberFilePath(m_smNumber + "low_");
-
-			auto funcIsFileComplete = [](const std::wstring& path) -> bool {
-				if (path.empty())
-					return false;
-
-				CString ext = Misc::GetFileExt(path.c_str());
-				ext.MakeLower();
-				if (ext == L"incomplete") {
-					return false;
-				} else {
-					return true;
-				}
-			};
-
-			LPCWSTR kIncompleteCacheTail = L".mp4.incomplete";
-			LPCWSTR kCompleteCacheTail = L".mp4";
-
-			m_cacheComplete = funcIsFileComplete(cachePath);
-			if (cachePath.length()) {
-				if (m_cacheComplete) {
-					m_completeCachePath = cachePath;
-				} else {
-					m_incompleteCachePath = cachePath;
-					m_completeCachePath = CreateCacheFilePath(m_smNumber, false) + kCompleteCacheTail;
-				}
-			} else {
-				m_incompleteCachePath = CreateCacheFilePath(m_smNumber, false) + kIncompleteCacheTail;
-				m_completeCachePath = CreateCacheFilePath(m_smNumber, false) + kCompleteCacheTail;
-			}
-
-			m_lowCacheComplete = funcIsFileComplete(lowCachePath);
-			if (lowCachePath.length()) {
-				if (m_lowCacheComplete) {
-					m_completeLowCachePath = lowCachePath;
-				} else {
-					m_incompleteLowCachePath = lowCachePath;
-					m_completeLowCachePath = CreateCacheFilePath(m_smNumber, true) + kCompleteCacheTail;
-				}
-			} else {
-				m_incompleteLowCachePath = CreateCacheFilePath(m_smNumber, true) + kIncompleteCacheTail;
-				m_completeLowCachePath = CreateCacheFilePath(m_smNumber, true) + kCompleteCacheTail;
-			}
-
-			m_cachePath = cachePath;
-			m_lowCachePath = lowCachePath;
-			return IsCacheComplete();
-		}
-
-		bool	IsCacheComplete() const {
-			return (m_cachePath.length() > 0) ||
-				(m_lowCachePath.length() > 0 && m_bLowRequest);
-		}
-
-		const std::wstring& LoadCachePath() const
-		{
-			if (m_cacheComplete || m_cachePath.length()) {
-				return m_cachePath;
-			} else {
-				return m_lowCachePath;
-			}
-		}
-
-		bool	IsLoadCacheComplete() const
-		{
-			if (m_cacheComplete) {
-				return true;
-			} else {
-				if (m_cachePath.length()) {
-					return false;
-				} else {
-					return m_lowCacheComplete;
-				}
-			}
-		}
-
-		const std::wstring& IncompleteCachePath() const
-		{
-			if (m_bLowRequest) {
-				return m_incompleteLowCachePath;
-			} else {
-				return m_incompleteCachePath;
-			}
-		}
-
-		const std::wstring& CompleteCachePath() const
-		{
-			if (m_bLowRequest) {
-				return m_completeLowCachePath;
-			} else {
-				return m_completeCachePath;
-			}
-		}
-
-		void	MoveFileIncompleteToComplete()
-		{
-			BOOL bRet = ::MoveFile(IncompleteCachePath().c_str(), CompleteCachePath().c_str());
-			if (bRet == 0) {
-				ERROR_LOG << L"MoveFile failed : src : " << IncompleteCachePath() << L" dest : " << CompleteCachePath();
-			}
-			if (m_bLowRequest == false && m_lowCachePath.length()) {
-				::DeleteFile(m_lowCachePath.c_str());
-				INFO_LOG << L"古いキャッシュを削除しました。 : " << m_lowCachePath;
-			}
-		}
-
-	private:
-		std::string	m_smNumber;
-		bool		m_bLowRequest;
-
-		std::wstring m_cachePath;
-		bool		 m_cacheComplete;
-		std::wstring m_incompleteCachePath;
-		std::wstring m_completeCachePath;
-
-		std::wstring m_lowCachePath;
-		bool		 m_lowCacheComplete;
-		std::wstring m_incompleteLowCachePath;
-		std::wstring m_completeLowCachePath;
-	};
 
 }	// namespace
 
 
-std::string	GetThumbData(const std::string& thumbURL)
-{
-	std::wstring url = UTF16fromUTF8(thumbURL);
-	std::wregex rx(L"http://[^.]+\\.smilevideo\\.jp/smile\\?i=(.*)");
-	std::wsmatch result;
-	if (std::regex_match(url, result, rx) == false) {
-		ATLASSERT(FALSE);
-		return "";
-	}
-
-	std::wstring number = result.str(1);
-	std::wstring thumbCachePath = GetThumbCachePath(number);
-
-	if (thumbCachePath.length() > 0) {
-		CString ext = Misc::GetFileExt(thumbCachePath.c_str());
-		ext.MakeLower();
-		if (ext != L"incomplete") {
-			std::string thumbData = LoadFile(thumbCachePath);
-			return thumbData;
-		}
-	}
-
-	if (auto value = WinHTTPWrapper::HttpDownloadData(url.c_str())) {
-		return *value;
-	}
-
-	return "";
-}
-
-std::string GetThumbURL(const std::string& smNumber)
-{
-	std::string getThumbURL = "http://ext.nicovideo.jp/api/getthumbinfo/" + smNumber;
-	if (auto value = WinHTTPWrapper::HttpDownloadData(getThumbURL.c_str())) {
-		std::string body = value.get();
-		std::regex rx("<thumbnail_url>([^<]+)</thumbnail_url>");
-		std::smatch result;
-		if (std::regex_search(body, result, rx)) {
-			std::string thumbURL = result[1].str();
-			return thumbURL;
-		}
-	}
-	ATLASSERT(FALSE);
-	return "";
-}
-
 boost::optional<std::pair<int, int>>	GetDLCountAndClientDLCompleteCount(const std::string& smNumber)
 {
-	return g_nicoDatabase.GetDLCountAndClientDLCompleteCount(smNumber);
+	return CNicoDatabase::GetInstance().GetDLCountAndClientDLCompleteCount(smNumber);
 }
 
 void	DownloadThumbDataWhereIsNULL()
 {
-	g_nicoDatabase.DownloadThumbDataWhereIsNULL();
+	CNicoDatabase::GetInstance().DownloadThumbDataWhereIsNULL();
 }
-
-///////////////////////////////////////////////////
-// CNicoMovieCacheManager
-
-void	CNicoMovieCacheManager::StartThread(
-	const std::string& smNumber,
-	CFilterOwner& filterOwner, std::unique_ptr<CSocket>&& sockBrowser)
-{
-	INFO_LOG << L"CNicoMovieCacheManager::StartThread : " << smNumber;
-
-	auto manager = new CNicoMovieCacheManager;
-	manager->m_active = true;
-	manager->m_smNumber = smNumber;
-
-	manager->_CreateTransactionData(smNumber);
-
-	manager->NewBrowserConnection(filterOwner, std::move(sockBrowser));
-
-	//CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
-	auto result = CNicoCacheManager::s_mapsmNumberCacheManager.emplace_front(
-								std::make_pair(smNumber, std::unique_ptr<CNicoMovieCacheManager>(std::move(manager))));
-	ATLASSERT(result.second);
-	manager->m_thisThread = std::thread([manager]() {
-
-		try {
-			manager->Manage();
-		}
-		catch (std::exception& e) {
-			ERROR_LOG << L"CNicoMovieCacheManager::StartThread : " << e.what();
-			CNicoCacheManager::DestroyTransactionData(manager->m_transactionData);
-		}
-
-		manager->m_thisThread.detach();
-
-		CCritSecLock lock(CNicoCacheManager::s_cssmNumberCacheManager);
-		auto& mapList = CNicoCacheManager::s_mapsmNumberCacheManager.get<CNicoCacheManager::hash>();
-		auto it = mapList.find(manager->m_smNumber);
-		if (it == mapList.end()) {
-			ATLASSERT(FALSE);
-			return;
-		}
-		mapList.erase(it);
-	});
-}
-
-void	CNicoMovieCacheManager::StartThread(const std::string& smNumber, const NicoRequestData& nicoRequestData)
-{
-	INFO_LOG << L"CNicoMovieCacheManager::StartThread : " << smNumber;
-
-	auto manager = new CNicoMovieCacheManager;
-	manager->m_active = true;
-	manager->m_smNumber = smNumber;
-
-	manager->_CreateTransactionData(smNumber);
-
-	manager->m_optNicoRequestData = nicoRequestData;
-
-	//CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
-	auto result = CNicoCacheManager::s_mapsmNumberCacheManager.emplace_front(
-		std::make_pair(smNumber, std::unique_ptr<CNicoMovieCacheManager>(std::move(manager))));
-	ATLASSERT(result.second);
-	manager->m_thisThread = std::thread([manager]() {
-
-		try {
-			manager->Manage();
-		}
-		catch (std::exception& e) {
-			ERROR_LOG << L"CNicoMovieCacheManager::StartThread : " << e.what();
-			CNicoCacheManager::DestroyTransactionData(manager->m_transactionData);
-		}
-
-		manager->m_thisThread.detach();
-
-		CCritSecLock lock(CNicoCacheManager::s_cssmNumberCacheManager);
-		auto& mapList = CNicoCacheManager::s_mapsmNumberCacheManager.get<CNicoCacheManager::hash>();
-		auto it = mapList.find(manager->m_smNumber);
-		if (it == mapList.end()) {
-			ATLASSERT(FALSE);
-			return;
-		}
-		mapList.erase(it);
-	});
-}
-
-void	CNicoMovieCacheManager::_CreateTransactionData(const std::string& smNumber)
-{
-	bool bLowRequest = false;
-	std::string movieURL = CNicoCacheManager::Get_smNumberMovieURL(m_smNumber);
-	CString temp = movieURL.c_str();
-	if (temp.Right(3) == _T("low")) {
-		bLowRequest = true;
-	}
-
-	std::wstring transName;
-	CCacheFileManager cacheFileManager(smNumber, bLowRequest);
-	if (cacheFileManager.SearchCache() && cacheFileManager.IsLoadCacheComplete()) {
-		transName = (LPCWSTR)Misc::GetFileBaseNoExt(cacheFileManager.LoadCachePath().c_str());
-	} else {
-		transName = CreateCacheFilePath(smNumber, bLowRequest);
-		auto slashPos = transName.rfind(L'\\');
-		ATLASSERT(slashPos != std::wstring::npos);
-		transName = transName.substr(slashPos + 1);
-	}
-	m_transactionData = CNicoCacheManager::CreateTransactionData(transName);
-}
-
-void	CNicoMovieCacheManager::NewBrowserConnection(CFilterOwner& filterOwner, std::unique_ptr<CSocket>&& sockBrowser)
-{
-	CCritSecLock lock(m_csBrowserRangeRequestList);
-	m_browserRangeRequestList.emplace_front();
-	auto itThis = m_browserRangeRequestList.begin();
-	itThis->filterOwner = filterOwner;
-	itThis->sockBrowser = std::move(sockBrowser);
-	itThis->itThis = itThis;
-
-	m_transactionData->AddBrowserTransaction(static_cast<void*>(&*itThis));
-}
-
-void	CNicoMovieCacheManager::_InitRangeSetting(BrowserRangeRequest& browserRangeRequest)
-{
-	std::wstring range = CFilterOwner::GetHeader(browserRangeRequest.filterOwner.outHeaders, L"Range");
-	//INFO_LOG << L"_InitRangeSetting : " << browserRangeRequest.GetID();
-
-	if (range.empty()) {	// Range リクエストではない
-		browserRangeRequest.browserRangeBegin = 0;
-		browserRangeRequest.browserRangeEnd = m_movieSize - 1;
-		browserRangeRequest.rangeBufferPos = 0;
-
-		browserRangeRequest.filterOwner.RemoveInHeader(L"Accept-Ranges");
-		browserRangeRequest.filterOwner.RemoveInHeader(L"Content-Range");
-		browserRangeRequest.filterOwner.SetInHeader(L"Content-Length", std::to_wstring(m_movieSize));
-
-	} else {
-		std::wregex rx(L"bytes=(\\d+)-(\\d+)");
-		std::wsmatch result;
-		if (std::regex_search(range, result, rx) == false) {
-			// ブラウザから
-			std::wregex rx2(L"bytes=(\\d+)-");
-			std::wsmatch result2;
-			if (std::regex_search(range, result2, rx2) == false) {
-				throw std::runtime_error("ragex range not found");
-			} else {
-				browserRangeRequest.browserRangeBegin = boost::lexical_cast<int64_t>(result2.str(1));
-				browserRangeRequest.browserRangeEnd = m_movieSize - 1;
-			}
-
-		} else {
-			browserRangeRequest.browserRangeBegin = boost::lexical_cast<int64_t>(result.str(1));
-			browserRangeRequest.browserRangeEnd = boost::lexical_cast<int64_t>(result.str(2));
-		}
-
-		browserRangeRequest.browserRangeLength = browserRangeRequest.browserRangeEnd - browserRangeRequest.browserRangeBegin + 1;
-		browserRangeRequest.rangeBufferPos = browserRangeRequest.browserRangeBegin;
-
-
-		browserRangeRequest.filterOwner.SetInHeader(L"Accept-Ranges", L"bytes");
-		browserRangeRequest.filterOwner.SetInHeader(L"Content-Range",
-			(boost::wformat(L"bytes %1%-%2%/%3%") % browserRangeRequest.browserRangeBegin % browserRangeRequest.browserRangeEnd % m_movieSize).str());
-		browserRangeRequest.filterOwner.SetInHeader(L"Content-Length", std::to_wstring(browserRangeRequest.browserRangeLength));
-	}
-
-	browserRangeRequest.filterOwner.SetInHeader(L"Content-Type", L"video/mp4");
-
-	browserRangeRequest.filterOwner.SetInHeader(L"Connection", L"close");
-
-	auto browserData = m_transactionData->GetBrowserTransactionData(static_cast<void*>(&browserRangeRequest));
-	browserData->browserRangeBegin = browserRangeRequest.browserRangeBegin;
-	browserData->browserRangeEnd = browserRangeRequest.browserRangeEnd;
-	browserData->rangeBufferPos = browserRangeRequest.rangeBufferPos;
-}
-
-void	CNicoMovieCacheManager::_SendResponseHeader(BrowserRangeRequest& browserRangeRequest)
-{
-	std::string sendInBuf;
-	std::wstring range = CFilterOwner::GetHeader(browserRangeRequest.filterOwner.outHeaders, L"Range");
-	if (range.empty()) {
-		sendInBuf = "HTTP/1.1 200 OK" CRLF;
-	} else {
-		sendInBuf = "HTTP/1.1 206 Partial Content" CRLF;
-	}
-	std::string name;
-	for (auto& pair : browserRangeRequest.filterOwner.inHeaders)
-		sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-	sendInBuf += CRLF;
-
-	// HTTP Header を送信
-	WriteSocketBuffer(browserRangeRequest.sockBrowser.get(), sendInBuf.c_str(), sendInBuf.length());
-		//throw std::runtime_error("sockBrowser write error");
-
-	browserRangeRequest.bSendResponseHeader = true;
-}
-
-void	CNicoMovieCacheManager::SwitchToInvalid()
-{
-	m_active = false;
-}
-
-void	CNicoMovieCacheManager::ForceStop()
-{
-	m_thisThread.detach();
-}
-
-
-void CNicoMovieCacheManager::Manage()
-{
-	// 既存のキャッシュを調べる
-	m_movieSize = 0;
-	bool bIncomplete = false;
-	NicoRequestData nicoRequestData;
-	std::ofstream fs;
-
-	bool bLowRequest = false;
-	std::string movieURL = CNicoCacheManager::Get_smNumberMovieURL(m_smNumber);
-	CString temp = movieURL.c_str();
-	if (temp.Right(3) == _T("low")) {
-		bLowRequest = true;
-	}
-
-	std::wstring title = CNicoCacheManager::Get_smNumberTitle(m_smNumber);
-	if (g_nicoDatabase.AddNicoHistory(m_smNumber, UTF8fromUTF16(title))) {
-		std::string thumbURL = CNicoCacheManager::Get_smNumberThumbURL(m_smNumber);
-		if (thumbURL.length() > 0) {
-			std::string thumbData = GetThumbData(thumbURL + ".M");
-			if (thumbData.empty()) {
-				thumbData = GetThumbData(thumbURL);
-			}
-			if (thumbData.length() > 0) {
-				g_nicoDatabase.SetThumbData(m_smNumber, thumbData.data(), static_cast<int>(thumbData.size()));
-			} else {
-				ERROR_LOG << m_smNumber << L" no thumbData";
-				ATLASSERT(FALSE);
-			}
-		} else {
-			ERROR_LOG << m_smNumber << L" no thumbURL";
-			ATLASSERT(FALSE);
-		}
-	}
-
-	CCacheFileManager cacheFileManager(m_smNumber, bLowRequest);
-	if (cacheFileManager.SearchCache()) {
-
-		INFO_LOG << m_smNumber << L" cacheFile found : " << cacheFileManager.LoadCachePath();
-
-		// ファイル内容を読み込み
-		m_movieCacheBuffer = LoadFile(cacheFileManager.LoadCachePath());
-
-		// キャッシュが完全化どうか
-		if (cacheFileManager.IsLoadCacheComplete() == false) {
-			INFO_LOG << m_smNumber << L" incomplete cache file FileSize : " << m_movieCacheBuffer.size();
-
-			bIncomplete = true;
-
-		} else {
-			INFO_LOG << m_smNumber << L" cache file is complete!!";
-
-			// キャッシュは完全だった
-			m_movieSize = m_movieCacheBuffer.size();
-			m_transactionData->fileSize = m_movieSize;
-			m_transactionData->lastDLPos = m_movieSize;
-		}
-	} 
-
-	// キャッシュがないのでサイトからDLする
-	if (m_movieSize == 0) {
-
-		// 既にキャッシュがある
-		if (bIncomplete) {
-			fs.open(cacheFileManager.IncompleteCachePath(), std::ios::out | std::ios::binary | std::ios::app);
-
-		} else {
-			INFO_LOG << m_smNumber << L" create new cache file : " << cacheFileManager.IncompleteCachePath();
-			// 新規キャッシュを始める
-			fs.open(cacheFileManager.IncompleteCachePath(), std::ios::out | std::ios::binary);
-		}
-		if (!fs)
-			throw std::runtime_error("file open failed : " + std::string(CW2A(cacheFileManager.IncompleteCachePath().c_str())));
-
-		CUrl url;
-		HeadPairList outHeaders;
-		if (m_optNicoRequestData) {	// DLのみ
-			url = m_optNicoRequestData->url;
-			outHeaders = m_optNicoRequestData->outHeaders;
-		} else {
-			url = m_browserRangeRequestList.front().filterOwner.url;
-			outHeaders = m_browserRangeRequestList.front().filterOwner.outHeaders;
-		}
-
-		// 送信ヘッダを編集
-		auto outHeadersFiltered = outHeaders;
-		if (bIncomplete && m_movieCacheBuffer.size() > 0) {
-			// Range ヘッダを変更して途中からデータを取得する
-			std::wstring range = (boost::wformat(L"bytes=%1%-") % m_movieCacheBuffer.size()).str();
-			CFilterOwner::SetHeader(outHeadersFiltered, L"Range", range);
-		} else {
-			// Range ヘッダを削ってファイル全体を受信する設定にする
-			CFilterOwner::RemoveHeader(outHeadersFiltered, L"Range");
-		}
-
-		CFilterOwner::RemoveHeader(outHeadersFiltered, L"If-Modified-Since");
-		CFilterOwner::RemoveHeader(outHeadersFiltered, L"If-None-Match");
-
-		// リクエストを送信
-		m_sockWebsite = SendRequest(url, HttpVerb::kHttpGet, outHeadersFiltered);
-
-		// レスポンスヘッダ を受信する
-		std::string buffer;
-		CFilterOwner filterOwner;
-		GetResponseHeader(filterOwner, m_sockWebsite.get(), buffer);
-		if (filterOwner.responseLine.code != "200" && filterOwner.responseLine.code != "206") {
-			// ブラウザへ接続エラーを通知する
-			std::string sendInBuf = "HTTP/1.1 " + filterOwner.responseLine.code + " " + filterOwner.responseLine.msg + CRLF;
-			std::string name;
-			for (auto& pair : filterOwner.inHeaders)
-				sendInBuf += UTF8fromUTF16(pair.first) + ": " + UTF8fromUTF16(pair.second) + CRLF;
-
-			sendInBuf += CRLF;
-			sendInBuf += buffer;
-			if (m_browserRangeRequestList.size() > 0) {
-				WriteSocketBuffer(m_browserRangeRequestList.front().sockBrowser.get(), sendInBuf.c_str(), sendInBuf.length());
-				m_browserRangeRequestList.front().sockBrowser->Close();
-				m_browserRangeRequestList.erase(m_browserRangeRequestList.begin());
-			}
-
-			m_sockWebsite->Close();
-			m_sockWebsite.reset();
-
-			// 履歴に書き込み
-			CCritSecLock lock(m_transactionData->csData);
-			m_transactionData->detailText.Format(L"接続エラー code : %d", std::stoi(filterOwner.responseLine.code));
-
-			CNicoCacheManager::AddDLedNicoCacheManager(m_smNumber, m_transactionData);
-			CNicoCacheManager::DestroyTransactionData(m_transactionData);
-
-			ERROR_LOG << m_smNumber << L" 接続エラー code : " << filterOwner.responseLine.code;
-			return;
-		}
-
-		// ファイルサイズ取得
-		if (bIncomplete && m_movieCacheBuffer.size() > 0) {
-			std::wstring contentRange = filterOwner.GetInHeader(L"Content-Range");
-			std::wregex rx(L"bytes \\d+-\\d+/(\\d+)");
-			std::wsmatch result;
-			if (std::regex_search(contentRange, result, rx) == false)
-				throw std::runtime_error("contentRange not found");
-
-			m_movieSize = boost::lexical_cast<int64_t>(result.str(1));
-
-		} else {
-			std::string contentLength = UTF8fromUTF16(filterOwner.GetInHeader(L"Content-Length"));
-			if (contentLength.size() > 0) {
-				m_movieSize = boost::lexical_cast<int64_t>(contentLength);
-			} else {
-				throw std::runtime_error("no content-length");
-			}
-			ATLASSERT(m_movieCacheBuffer.empty());
-		}
-		INFO_LOG << m_smNumber << L" ファイルサイズ : " << m_movieSize;
-		m_transactionData->fileSize = m_movieSize;
-		m_transactionData->oldDLPos = m_movieCacheBuffer.size();
-
-		fs.write(buffer.c_str(), buffer.size());
-		m_movieCacheBuffer += buffer;
-		m_lastMovieSize = m_movieCacheBuffer.size();
-		m_transactionData->lastDLPos = m_lastMovieSize;
-
-		if (m_optNicoRequestData) {
-			nicoRequestData = m_optNicoRequestData.get();
-		} else {
-			nicoRequestData.url = url;
-			nicoRequestData.outHeaders = outHeaders;
-
-			_InitRangeSetting(m_browserRangeRequestList.front());
-			_SendResponseHeader(m_browserRangeRequestList.front());
-		}
-	}
-
-	bool debugSizeCheck = false;
-	bool isAddDLedList = false;
-	bool clientDLComplete = false;
-	steady_clock::time_point lastTime;
-	boost::optional<steady_clock::time_point> optboostTimeCountStart;
-	// クライアントダウンロード時のみboostを掛ける
-	if (m_browserRangeRequestList.size() > 0) {
-		optboostTimeCountStart = steady_clock::now();
-	}
-	int	boostCount = 0;
-	enum { kMaxBoostCount = 2 };
-	for (;;) {
-		{
-			CCritSecLock lock(m_csBrowserRangeRequestList);
-			for (auto& browserRangeRequest : m_browserRangeRequestList) {
-				if (browserRangeRequest.bSendResponseHeader)
-					continue;
-
-				_InitRangeSetting(browserRangeRequest);
-				_SendResponseHeader(browserRangeRequest);
-
-				lastTime = steady_clock::time_point();
-				//INFO_LOG << browserRangeRequest.GetID() << L" browser request";
-			}
-		}
-
-		std::list<std::list<BrowserRangeRequest>::iterator> suicideList;
-
-		bool bRead = false;
-		if (m_sockWebsite && m_sockWebsite->IsConnected()) {
-			bRead = ReadSocketBuffer(m_sockWebsite.get(), m_movieCacheBuffer);
-			if (bRead) {
-				size_t bufferSize = m_movieCacheBuffer.size();
-				if (fs) {
-					size_t writeSize = bufferSize - m_lastMovieSize;
-					fs.write(m_movieCacheBuffer.c_str() + m_lastMovieSize, writeSize);
-					m_lastMovieSize = bufferSize;
-				}
-				m_transactionData->lastDLPos = bufferSize;
-
-				if (bufferSize == m_movieSize) {
-					INFO_LOG << m_smNumber << L" のダウンロードを完了しました！";
-					m_sockWebsite->Close();
-					m_sockWebsite.reset();
-
-					if (fs) {
-						fs.close();
-
-						cacheFileManager.MoveFileIncompleteToComplete();
-
-						if (bLowRequest == false || m_bReserveVideoConvert) {
-							if (CNicoCacheManager::VideoConveter(m_smNumber, cacheFileManager.CompleteCachePath(), m_bReserveVideoConvert)) {
-								CCritSecLock lock(m_transactionData->csData);
-								m_transactionData->detailText = _T("エンコードを開始します。");
-								++m_transactionData->lastDLPos;
-							}
-						}
-					}
-					{
-						CCritSecLock lock(m_transactionData->csData);
-						m_transactionData->detailText = L"ダウンロードを完了しました！";
-					}
-					CNicoCacheManager::AddDLedNicoCacheManager(m_smNumber, m_transactionData);
-					isAddDLedList = true;
-					CNicoCacheManager::ConsumeDLQue();
-				}
-			}
-		} else {
-			if (debugSizeCheck == false) {
-				if (m_movieCacheBuffer.size() != m_movieSize) {
-					ERROR_LOG << m_smNumber << L" サイトとの接続が切れたが、ファイルをすべてDLできませんでした...";
-
-					if (_RetryDownload(nicoRequestData, fs)) {
-						continue;
-					}
-				}
-				if (isAddDLedList == false) {
-					{
-						CCritSecLock lock(m_transactionData->csData);
-						if (m_movieCacheBuffer.size() != m_movieSize) {
-							m_transactionData->detailText = L"サイトとの接続が切れたが、ファイルをすべてDLできませんでした...";
-						} else {
-							m_transactionData->detailText = L"ダウンロードを完了しました！";
-						}
-					}
-					CNicoCacheManager::AddDLedNicoCacheManager(m_smNumber, m_transactionData);
-					isAddDLedList = true;
-				}
-				if (m_sockWebsite) {
-					m_sockWebsite->Close();
-					m_sockWebsite.reset();
-				}
-			}
-			debugSizeCheck = true;
-		}
-		size_t bufferSize = m_movieCacheBuffer.size();
-	
-		{
-			CCritSecLock lock(m_csBrowserRangeRequestList);
-			for (auto& browserRangeRequest : m_browserRangeRequestList) {
-				if (browserRangeRequest.bSendResponseHeader == false)
-					continue;
-
-				if (browserRangeRequest.sockBrowser->IsConnected() == false) {
-					//INFO_LOG << browserRangeRequest.GetID() << L" browser disconnection";
-					suicideList.emplace_back(browserRangeRequest.itThis);
-
-				} else {
-					if (browserRangeRequest.rangeBufferPos < bufferSize) {
-						int64_t restRangeSize = browserRangeRequest.browserRangeEnd - browserRangeRequest.rangeBufferPos + 1;
-						int64_t sendSize = bufferSize - browserRangeRequest.rangeBufferPos;
-						if (restRangeSize < sendSize)
-							sendSize = restRangeSize;
-
-						//INFO_LOG << browserRangeRequest.GetID() << L" RangeBegin : " << browserRangeRequest.browserRangeBegin << L" RangeEnd : " << browserRangeRequest.browserRangeEnd << L" RangeBufferPos : " << browserRangeRequest.rangeBufferPos << L" sendSize : " << sendSize;
-
-						WriteSocketBuffer(browserRangeRequest.sockBrowser.get(), 
-											m_movieCacheBuffer.c_str() + browserRangeRequest.rangeBufferPos, sendSize);
-						browserRangeRequest.rangeBufferPos += sendSize;
-
-						auto browserData = m_transactionData->GetBrowserTransactionData(static_cast<void*>(&browserRangeRequest));
-						browserData->rangeBufferPos = browserRangeRequest.rangeBufferPos;
-
-						if (browserRangeRequest.rangeBufferPos > browserRangeRequest.browserRangeEnd) {	// 終わり
-							//INFO_LOG << browserRangeRequest.GetID() << L" browser close";
-							browserRangeRequest.sockBrowser->Close();
-							suicideList.emplace_back(browserRangeRequest.itThis);
-
-							if (browserRangeRequest.rangeBufferPos == m_movieSize && clientDLComplete == false) {
-								g_nicoDatabase.ClientDLComplete(m_smNumber);
-								clientDLComplete = true;
-							}
-						}
-					} else {
-						//INFO_LOG << L"RangeBufferPos : " << m_rangeBufferPos << L" bufferSize : " << bufferSize;
-					}
-				}
-			}
-		}
-
-		{
-			CCritSecLock lock(m_csBrowserRangeRequestList);	
-			for (auto it : suicideList) {
-				m_transactionData->RemoveBrowserTransaction(static_cast<void*>(&*it));
-				m_browserRangeRequestList.erase(it);
-			}
-			suicideList.clear();
-
-			// キャッシュコンプリート済み かつ ブラウザからのリクエストが一定時間なければ終了させる
-			if (m_sockWebsite == nullptr && m_browserRangeRequestList.empty()) {
-				if (lastTime == steady_clock::time_point()) {
-					lastTime = steady_clock::now();
-				} else {
-					if ((steady_clock::now() - lastTime) > minutes(3)) {
-						SwitchToInvalid();
-					}
-				}
-			}
-		}
-
-		if (bRead == false) {
-			if (m_active == false) {
-				INFO_LOG << m_smNumber << L" active false break";
-				if (m_sockWebsite && m_sockWebsite->IsConnected()) {
-					m_sockWebsite->Close();
-				}
-				{
-					CCritSecLock lock(m_csBrowserRangeRequestList);
-					for (auto& browserRangeRequest : m_browserRangeRequestList) {
-						if (browserRangeRequest.sockBrowser->IsConnected()) {
-							browserRangeRequest.sockBrowser->Close();
-						}
-					}
-				}
-
-				if (m_movieCacheBuffer.size() != m_movieSize) {
-					CNicoCacheManager::AddDLQue(m_smNumber, nicoRequestData);
-				}
-				break;
-			}
-
-			::Sleep(50);
-		}
-
-		// 10秒経ったら一度切って再接続する
-		if (optboostTimeCountStart && m_sockWebsite && m_sockWebsite->IsConnected() && fs &&
-			((steady_clock::now() - *optboostTimeCountStart) > seconds(10))) 
-		{
-			++boostCount;
-			if (boostCount <= kMaxBoostCount) {
-				INFO_LOG << m_smNumber << L" boost retry download";
-				_RetryDownload(nicoRequestData, fs);
-				optboostTimeCountStart = steady_clock::now();
-
-			} else {
-				optboostTimeCountStart.reset();	// boost stop
-			}
-		}
-	}	// for(;;)
-
-	CNicoCacheManager::DestroyTransactionData(m_transactionData);
-
-	ReduceCache();
-
-	INFO_LOG << m_smNumber << L" Manage finish";
-}
-
-bool	CNicoMovieCacheManager::_RetryDownload(const NicoRequestData& nicoRequestData, std::ofstream& fs)
-{
-	++m_retryCount;
-	INFO_LOG << L"_RetryDownload : retryCount : " << m_retryCount;
-
-	if (kMaxRetryCount < m_retryCount) {
-		ERROR_LOG << L"Reached maxRetryCount";
-		return false;
-	}
-
-	m_sockWebsite->Close();
-	m_sockWebsite.reset();
-
-	CUrl url = nicoRequestData.url;
-	HeadPairList outHeaders = nicoRequestData.outHeaders;
-
-	// 送信ヘッダを編集
-	auto outHeadersFiltered = outHeaders;
-
-	// Range ヘッダを変更して途中からデータを取得する
-	std::wstring range = (boost::wformat(L"bytes=%1%-") % m_movieCacheBuffer.size()).str();
-	CFilterOwner::SetHeader(outHeadersFiltered, L"Range", range);
-
-	CFilterOwner::RemoveHeader(outHeadersFiltered, L"If-Modified-Since");
-	CFilterOwner::RemoveHeader(outHeadersFiltered, L"If-None-Match");
-
-	// リクエストを送信
-	m_sockWebsite = SendRequest(url, HttpVerb::kHttpGet, outHeadersFiltered);
-
-	// レスポンスヘッダ を受信する
-	std::string buffer;
-	CFilterOwner filterOwner;
-	GetResponseHeader(filterOwner, m_sockWebsite.get(), buffer);
-
-	// ファイルサイズ取得
-	std::wstring contentRange = filterOwner.GetInHeader(L"Content-Range");
-	std::wregex rx(L"bytes \\d+-\\d+/(\\d+)");
-	std::wsmatch result;
-	if (std::regex_search(contentRange, result, rx) == false)
-		throw std::runtime_error("contentRange not found");
-
-	int64_t movieSize = boost::lexical_cast<int64_t>(result.str(1));
-	ATLASSERT(movieSize == m_movieSize);
-
-	INFO_LOG << m_smNumber << L" ファイルサイズ : " << m_movieSize;
-
-	fs.write(buffer.c_str(), buffer.size());
-	m_movieCacheBuffer += buffer;
-	m_lastMovieSize = m_movieCacheBuffer.size();
-	m_transactionData->lastDLPos = m_lastMovieSize;
-
-	return true;
-}
-
 
 ///////////////////////////////////////////////////
 // CNicoCacheManager
@@ -1162,7 +187,7 @@ void CNicoCacheManager::TrapGetFlv(CFilterOwner& filterOwner, CSocket* sockBrows
 
 		} else {
 			// キャッシュを送信
-			WriteSocketBuffer(sockBrowser, s_cacheGetflv.second.c_str(), s_cacheGetflv.second.length());
+			WriteSocketBuffer(sockBrowser, s_cacheGetflv.second.c_str(), static_cast<int>(s_cacheGetflv.second.length()));
 			INFO_LOG << smNumber << L" Send CacheGetflv";
 		}
 	}
@@ -1239,8 +264,8 @@ void CNicoCacheManager::ManageMovieCache(CFilterOwner& filterOwner, std::unique_
 				auto& orderList = s_mapsmNumberCacheManager.get<seq>();
 				for (auto it = orderList.rbegin(); it != orderList.rend(); ++it) {
 					if (it->second->IsValid()) {
-						it->second->SwitchToInvalid();
-						INFO_LOG << it->second->smNumber() << L" を無効にしました";
+						INFO_LOG << it->second->smNumber() << L" をリストから取り除きました";
+						it->second->ForceDatach();
 						break;
 					}
 				}
@@ -1255,8 +280,8 @@ void CNicoCacheManager::ManageMovieCache(CFilterOwner& filterOwner, std::unique_
 				}
 			}
 		}
-
-		CNicoMovieCacheManager::StartThread(smNumber, filterOwner, std::move(sockBrowser));
+		NicoMoviewCacheStartData startData(smNumber , filterOwner, std::move(sockBrowser));
+		CNicoMovieCacheManager::StartThread(startData);
 	}
 	sockBrowser.reset(new CSocket);
 }
@@ -1429,7 +454,8 @@ void CNicoCacheManager::ConsumeDLQue()
 
 	INFO_LOG << L"CNicoCacheManager::ConsumeDLQue : " << requestData.first;
 	CCritSecLock lock2(CNicoCacheManager::s_cssmNumberCacheManager);
-	CNicoMovieCacheManager::StartThread(requestData.first, requestData.second);
+	NicoMoviewCacheStartData startData(requestData.first, requestData.second);
+	CNicoMovieCacheManager::StartThread(startData);
 }
 
 
@@ -1616,7 +642,8 @@ void CNicoCacheManager::QueDownloadVideo(const std::wstring& watchPageURL)
 			CFilterOwner::SetHeader(nicoRequestData.outHeaders, L"Host", nicoRequestData.url.getHost());
 
 			if (s_mapsmNumberCacheManager.size() < kMaxParallelDLCount) {
-				CNicoMovieCacheManager::StartThread(smNumber, nicoRequestData);
+				NicoMoviewCacheStartData startData(smNumber, nicoRequestData);
+				CNicoMovieCacheManager::StartThread(startData);
 			} else {
 				AddDLQue(smNumber, nicoRequestData);
 			}
@@ -1772,7 +799,7 @@ void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::un
 				ATLASSERT(FALSE);
 			}
 		}
-		auto nicoHistoryList = g_nicoDatabase.QueryNicoHistoryList(queryOrder);
+		auto nicoHistoryList = CNicoDatabase::GetInstance().QueryNicoHistoryList(queryOrder);
 
 		timer processTimer;
 		std::string json;
@@ -2096,7 +1123,8 @@ bool	CNicoCacheManager::VideoConveter(const std::string& smNumber, const std::ws
 								auto& list = s_mapsmNumberCacheManager.get<hash>();
 								auto it = list.find(smNumber);
 								if (it != list.end()) {
-									it->second->SwitchToInvalid();
+									INFO_LOG << L"VideoConvert success and Do ForceDatatch " << smNumber;
+									it->second->ForceDatach();
 								}
 							}
 							CString SEpath = Misc::GetExeDirectory() + _T("宝箱出現.wav");
@@ -2164,7 +1192,7 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 
 		} else {
 			// キャッシュを送信
-			WriteSocketBuffer(sockBrowser.get(), s_cacheGetThumbInfo.second.c_str(), s_cacheGetThumbInfo.second.length());
+			WriteSocketBuffer(sockBrowser.get(), s_cacheGetThumbInfo.second.c_str(), static_cast<int>(s_cacheGetThumbInfo.second.length()));
 			INFO_LOG << smNumber << L" Send CacheThumbInfo";
 		}
 		return true;
@@ -2205,7 +1233,7 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 
 		} else {
 			// キャッシュを送信
-			WriteSocketBuffer(sockBrowser.get(), s_cacheWatchPage.second.c_str(), s_cacheWatchPage.second.length());
+			WriteSocketBuffer(sockBrowser.get(), s_cacheWatchPage.second.c_str(), static_cast<int>(s_cacheWatchPage.second.length()));
 			INFO_LOG << smNumber << L" Send CacheWatchPage";
 		}
 		return true;
@@ -2299,7 +1327,7 @@ bool CNicoCacheManager::ManagePostCache(CFilterOwner& filterOwner, std::unique_p
 			auto sockWebsite = SendRequest(filterOwner.url, HttpVerb::kHttpPost, outHeadersFiltered);
 
 			// Post内容を送信
-			WriteSocketBuffer(sockWebsite.get(), postData.c_str(), postData.length());
+			WriteSocketBuffer(sockWebsite.get(), postData.c_str(), static_cast<int>(postData.length()));
 
 			// HTTP Header を受信する
 			std::string buffer;

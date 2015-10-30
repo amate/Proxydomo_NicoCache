@@ -207,6 +207,12 @@
     <ClCompile Include="NicoDatabase.cpp">
       <Filter>Header Files</Filter>
     </ClCompile>
+    <ClCompile Include="NicoMovieCacheManager.cpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
+    <ClCompile Include="NicoCacheMisc.cpp">
+      <Filter>Header Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">
@@ -435,6 +441,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="NicoDatabase.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="NicoMovieCacheManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="NicoCacheMisc.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

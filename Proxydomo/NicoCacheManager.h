@@ -23,15 +23,10 @@
 #include "FilterOwner.h"
 #include "Socket.h"
 #include "TransactionView.h"
+#include "NicoMovieCacheManager.h"
 
 using namespace boost::multi_index;
 
-
-struct NicoRequestData
-{
-	CUrl	url;
-	HeadPairList outHeaders;
-};
 
 struct DLedNicoCache
 {
@@ -67,95 +62,6 @@ struct VideoConvertItem
 boost::optional<std::pair<int, int>>	GetDLCountAndClientDLCompleteCount(const std::string& smNumber);
 void	DownloadThumbDataWhereIsNULL();
 
-class CNicoCacheManager;
-
-//////////////////////////////////////////////////////////////
-// CNicoMovieCacheManager
-
-class CNicoMovieCacheManager
-{
-	friend class CNicoCacheManager;
-
-	struct BrowserRangeRequest {
-		bool			bSendResponseHeader;
-		CFilterOwner	filterOwner;
-		std::unique_ptr<CSocket>	sockBrowser;
-
-		int64_t	browserRangeBegin;
-		int64_t browserRangeEnd;
-		int64_t browserRangeLength;
-
-		int64_t rangeBufferPos;
-
-		std::list<BrowserRangeRequest>::iterator itThis;
-
-		BrowserRangeRequest() : bSendResponseHeader(false),
-			browserRangeBegin(0), browserRangeEnd(0), browserRangeLength(0), rangeBufferPos(0)
-		{}
-
-		std::wstring GetID()
-		{
-			std::wstring range = CFilterOwner::GetHeader(filterOwner.outHeaders, L"Range");
-			return L"[" +  range + L"]";
-		}
-	};
-
-	CNicoMovieCacheManager() : m_bReserveVideoConvert(false), m_retryCount(0)
-	{}
-
-public:
-
-	static void	StartThread(const std::string& smNumber, 
-							CFilterOwner& filterOwner, std::unique_ptr<CSocket>&& sockBrowser);
-	static void	StartThread(const std::string& smNumber, const NicoRequestData& nicoRequestData);
-
-	void	NewBrowserConnection(CFilterOwner& filterOwner, std::unique_ptr<CSocket>&& sockBrowser);
-
-	void	ReserveVideoConvert() {	
-		// DL中じゃなきゃ有効にしても意味がない
-		ATLASSERT(m_movieSize > 0 && m_movieSize != m_movieCacheBuffer.size());
-		m_bReserveVideoConvert = true;
-	}
-
-	std::string smNumber() const { return m_smNumber; }
-
-	bool	IsValid() const { return m_active; }
-	void	SwitchToInvalid();
-	void	ForceStop();
-
-	void	Manage();
-
-private:
-	void	_CreateTransactionData(const std::string& smNumber);
-
-	void	_InitRangeSetting(BrowserRangeRequest& browserRangeRequest);
-	void	_SendResponseHeader(BrowserRangeRequest& browserRangeRequest);
-
-	bool	_RetryDownload(const NicoRequestData& nicoRequestData, std::ofstream& fs);
-
-	std::atomic_bool	m_active;
-	std::string m_smNumber;
-	std::thread	m_thisThread;
-
-	boost::optional<NicoRequestData>	m_optNicoRequestData;
-
-	std::unique_ptr<CSocket>	m_sockWebsite;
-
-	int64_t			m_movieSize;
-	std::string		m_movieCacheBuffer;
-	int64_t			m_lastMovieSize;
-
-	CCriticalSection	m_csBrowserRangeRequestList;
-	std::list<BrowserRangeRequest>	m_browserRangeRequestList;
-
-	std::shared_ptr<TransactionData>	m_transactionData;
-
-	bool	m_bReserveVideoConvert;
-
-	enum { kMaxRetryCount = 10 };
-	int		m_retryCount;
-
-};
 
 //////////////////////////////////////////////////////////////
 // CNicoCacheManager
@@ -170,6 +76,7 @@ public:
 
 	static void CloseAllConnection();
 
+#pragma region associate smNumber => movieURL, title, thumbURL
 	static bool IsGetFlvURL(const CUrl& url);
 	static void TrapGetFlv(CFilterOwner& filterOwner, CSocket* sockBrowser);
 	static void Associate_movieURL_smNumber(const std::string& movieURL, const std::string& smNumber);
@@ -183,7 +90,7 @@ public:
 
 	static void Associate_smNumberThumbURL(const std::string& smNumber, const std::string& thumbURL);
 	static std::string Get_smNumberThumbURL(const std::string& smNumber);
-
+#pragma endregion
 	static std::wstring FailFound(const std::string& smNumber);
 
 
@@ -192,6 +99,7 @@ public:
 
 	static void QueDownloadVideo(const std::wstring& watchPageURL);
 
+	// CNicoMovieCacheManager が利用する
 	static std::shared_ptr<TransactionData>	CreateTransactionData(const std::wstring& name);
 	static void	DestroyTransactionData(std::shared_ptr<TransactionData> transData);
 
@@ -200,6 +108,7 @@ public:
 
 	static void AddDLedNicoCacheManager(const std::string& smNumber, std::shared_ptr<TransactionData> transData);
 
+	// http://local.ptron/nicocache/nicocache_api へのリクエストを処理する
 	static bool IsNicoCacheServerRequest(const CUrl& url);
 	static void ManageNicoCacheServer(CFilterOwner& filterOwner, std::unique_ptr<CSocket>& sockBrowser);
 
@@ -238,12 +147,12 @@ private:
 	struct seq {}; // 挿入順のタグ
 	struct hash {};
 	typedef boost::multi_index_container <
-		std::pair<std::string, std::unique_ptr<CNicoMovieCacheManager>>,
+		std::pair<std::string, std::shared_ptr<CNicoMovieCacheManager>>,
 		indexed_by<
 			sequenced<tag<seq>>,	// 挿入順
 			hashed_unique<tag<hash>, 
-			member<std::pair<std::string, std::unique_ptr<CNicoMovieCacheManager>>, std::string, 
-							&std::pair<std::string, std::unique_ptr<CNicoMovieCacheManager>>::first>>	// set
+			member<std::pair<std::string, std::shared_ptr<CNicoMovieCacheManager>>, std::string,
+							&std::pair<std::string, std::shared_ptr<CNicoMovieCacheManager>>::first>>	// set
 		>
 	> ManagerContainer;
 

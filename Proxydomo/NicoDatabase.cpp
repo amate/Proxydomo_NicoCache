@@ -2,12 +2,13 @@
 #include "NicoDatabase.h"
 #include <sqlite3.h>
 #include <thread>
+#include <fstream>
 #include "Misc.h"
 #include "Logger.h"
 #include "CodeConvert.h"
+#include "NicoCacheMisc.h"
 using namespace CodeConvert;
 
-#include <fstream>
 
 namespace {
 
@@ -95,27 +96,12 @@ private:
 
 }	// namespace
 
-	// ファイル内容を読み込み
-std::string LoadFile(const std::wstring& filePath)
+
+CNicoDatabase&	CNicoDatabase::GetInstance()
 {
-	std::ifstream fscache(filePath, std::ios::in | std::ios::binary);
-	if (!fscache)
-		throw std::runtime_error("file open failed : " + std::string(CW2A(filePath.c_str())));
-
-	std::string data;
-	fscache.seekg(0, std::ios::end);
-	auto fileSize = fscache.tellg();
-	fscache.seekg(0, std::ios::beg);
-	fscache.clear();
-	data.resize(static_cast<size_t>(fileSize));
-	fscache.read(const_cast<char*>(data.data()), static_cast<size_t>(fileSize));
-	fscache.close();
-
-	return data;
+	static CNicoDatabase s_instance;
+	return s_instance;
 }
-
-std::string	GetThumbData(const std::string& thumbURL);
-std::string GetThumbURL(const std::string& smNumber);
 
 CNicoDatabase::CNicoDatabase() : m_db(nullptr)
 {
@@ -291,7 +277,7 @@ void	CNicoDatabase::DownloadThumbDataWhereIsNULL()
 				thumbData = GetThumbData(thumbURL);
 			}
 			if (thumbData.size() > 0) {
-				SetThumbData(smNumber, thumbData.data(), thumbData.size());
+				SetThumbData(smNumber, thumbData.data(), static_cast<int>(thumbData.size()));
 				INFO_LOG << L"DownloadThumbDataWhereIsNULL SetThumbData smNumber : " << smNumber;
 			} else {
 				ATLASSERT(FALSE);
