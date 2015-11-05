@@ -39,7 +39,7 @@
 #endif
 
 /// アプリケーションのバージョン
-#define APP_VERSION	_T("1.65n3")
+#define APP_VERSION	_T("1.69n3")
 
 
 
