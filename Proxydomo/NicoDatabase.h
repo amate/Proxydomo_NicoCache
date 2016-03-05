@@ -40,7 +40,7 @@ public:
 	boost::optional<std::pair<int, int>>	GetDLCountAndClientDLCompleteCount(const std::string& smNumber);
 	void	SetThumbData(const std::string& smNumber, const char* data, int size);
 
-	std::list<NicoHistory>	QueryNicoHistoryList(NicoListQuery query);
+	std::list<NicoHistory>	QueryNicoHistoryList(NicoListQuery query, int limit, int offset, int& rowCount);
 
 	void	DownloadThumbDataWhereIsNULL();
 

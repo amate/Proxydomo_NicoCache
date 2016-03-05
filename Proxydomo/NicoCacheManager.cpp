@@ -786,9 +786,21 @@ void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::un
 	auto nicoHistoryPos = query.find(L"nicoHistory");
 	if (nicoHistoryPos != std::wstring::npos) {
 		NicoListQuery queryOrder = NicoListQuery::kDownloadOrderDesc;
+		int page = 1;
 		auto orderPos = query.find(L"&order=");
 		if (orderPos != std::wstring::npos) {
-			std::wstring strOrder = query.substr(orderPos + wcslen(L"&order="));
+			auto pagePos = query.find(L"&page=", orderPos + wcslen(L"&order="));
+			size_t orderLength = std::wstring::npos;
+			if (pagePos != std::wstring::npos) {
+				std::wstring strPage = query.substr(pagePos + wcslen(L"&page="));
+				page = std::stoi(strPage);
+				ATLASSERT(0 < page);
+				if (page <= 0) {
+					page = 1;
+				}
+				orderLength = pagePos - (orderPos + wcslen(L"&order="));
+			}
+			std::wstring strOrder = query.substr(orderPos + wcslen(L"&order="), orderLength);
 			if (strOrder == L"DownloadOrderDesc") {
 				queryOrder = NicoListQuery::kDownloadOrderDesc;
 			} else if (strOrder == L"ClientDLIncompleteOrderDesc") {
@@ -799,7 +811,9 @@ void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::un
 				ATLASSERT(FALSE);
 			}
 		}
-		auto nicoHistoryList = CNicoDatabase::GetInstance().QueryNicoHistoryList(queryOrder);
+		enum { kLimit = 50 };
+		int rowCount = 0;
+		auto nicoHistoryList = CNicoDatabase::GetInstance().QueryNicoHistoryList(queryOrder, kLimit, page - 1, rowCount);
 
 		timer processTimer;
 		std::string json;
@@ -832,7 +846,15 @@ void CNicoCacheManager::ManageNicoCacheServer(CFilterOwner& filterOwner, std::un
 				json += ",";
 			}
 		}
-		json += R"(]})";
+		//json += R"(]})";
+		json += R"(],)";
+
+		int maxPage = rowCount / kLimit;
+		if ((rowCount % kLimit) > 0) {
+			++maxPage;
+		}
+		json += boost::io::str(boost::format(R"("page":"%1%", "maxPage":"%2%", "limit":"%3%", "rowCount":"%4%")") % page % maxPage % kLimit % rowCount);
+		json += R"(})";
 
 		//INFO_LOG << L"nicocache_api?nicoHistory " << processTimer.format();
 

@@ -47,6 +47,14 @@ public:
 		}
 	}
 
+	void	BindInt(int placePos, int num)
+	{
+		int err = sqlite3_bind_int(m_stmt, placePos, num);
+		if (err != SQLITE_OK) {
+			throw std::runtime_error("sqlite3_bind_int failed");
+		}
+	}
+
 	int		Step()
 	{
 		int err = sqlite3_step(m_stmt);
@@ -220,7 +228,7 @@ void	CNicoDatabase::SetThumbData(const std::string& smNumber, const char* data, 
 }
 
 
-std::list<NicoHistory>	CNicoDatabase::QueryNicoHistoryList(NicoListQuery query)
+std::list<NicoHistory>	CNicoDatabase::QueryNicoHistoryList(NicoListQuery query, int limit, int offset, int& rowCount)
 {
 	std::list<NicoHistory> nicoHistoryList;
 
@@ -245,10 +253,20 @@ std::list<NicoHistory>	CNicoDatabase::QueryNicoHistoryList(NicoListQuery query)
 	}
 
 	CCritSecLock lock(m_cs);
+	{
+		CSQLiteStatement stmt2(m_db, "SELECT count(*) FROM nicoHistory " + order);
+		int err = stmt2.Step();
+		ATLASSERT(err == SQLITE_ROW);
+		rowCount = stmt2.ColumnInt(0);
+	}
+
 	std::string sql = R"(SELECT smNumber, title, DLCount, ClientDLCompleteCount, lastAccessTime, thumbData 
 			FROM nicoHistory )";
 	sql += order;
+	sql += " LIMIT ? OFFSET ?";
 	CSQLiteStatement stmt(m_db, sql.c_str());
+	stmt.BindInt(1, limit);
+	stmt.BindInt(2, offset * limit);
 
 	int err;
 	while ((err = stmt.Step()) == SQLITE_ROW) {
