@@ -34,7 +34,9 @@
 using namespace UITranslator;
 using namespace boost::property_tree;
 
-CMainDlg::CMainDlg(CProxy* proxy) : m_proxy(proxy), m_wndLogButton(this, 1), m_bVisibleOnDestroy(true)
+CMainDlg::CMainDlg(CProxy* proxy) : 
+	WM_TASKBARCREATED(::RegisterWindowMessage(TEXT("TaskbarCreated"))), 
+	m_proxy(proxy), m_wndLogButton(this, 1), m_bVisibleOnDestroy(true)
 {
 }
 
@@ -54,6 +56,43 @@ void CMainDlg::FilterEvent(LogFilterEvent Event, int RequestNumber, const std::s
 			}
 		}
 	}
+}
+
+// トレイアイコンを作成
+void	CMainDlg::_CreateTasktrayIcon()
+{	
+	HICON hIconSmall = AtlLoadIconImage(IDR_MAINFRAME, LR_DEFAULTCOLOR, ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON));
+	NOTIFYICONDATA	nid = { sizeof(NOTIFYICONDATA) };
+	nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+	nid.hWnd = m_hWnd;
+	nid.hIcon = hIconSmall;
+	nid.uID = kTrayIconId;
+	nid.uCallbackMessage = WM_TRAYICONNOTIFY;
+	::_tcscpy_s(nid.szTip, APP_NAME);
+	if (::Shell_NotifyIcon(NIM_ADD, &nid) == FALSE && ::GetLastError() == ERROR_TIMEOUT) {
+		do {
+			::Sleep(1000);
+			if (::Shell_NotifyIcon(NIM_MODIFY, &nid))
+				break;	// success
+		} while (::Shell_NotifyIcon(NIM_ADD, &nid) == FALSE);
+	}
+	DestroyIcon(hIconSmall);
+
+	_ChangeTasttrayIcon();
+}
+
+void	CMainDlg::_ChangeTasttrayIcon()
+{
+	UINT iconid = CSettings::s_bypass ? IDI_PROXYDOMO_BYPASS : IDR_MAINFRAME;
+	HICON hIconSmall = AtlLoadIconImage(iconid, LR_DEFAULTCOLOR, ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON));
+	NOTIFYICONDATA	nid = { sizeof(NOTIFYICONDATA) };
+	nid.uFlags = NIF_ICON;
+	nid.hWnd = m_hWnd;
+	nid.hIcon = hIconSmall;
+	nid.uID = kTrayIconId;
+	::Shell_NotifyIcon(NIM_MODIFY, &nid);
+
+	DestroyIcon(hIconSmall);
 }
 
 LRESULT CMainDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BOOL& /*bHandled*/)
@@ -92,22 +131,7 @@ LRESULT CMainDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam
 
 	DoDataExchange(DDX_LOAD);
 
-	{	// トレイアイコンを作成
-		NOTIFYICONDATA	nid = { sizeof(NOTIFYICONDATA) };
-		nid.uFlags	= NIF_ICON | NIF_MESSAGE | NIF_TIP;
-		nid.hWnd	= m_hWnd;
-		nid.hIcon	= hIconSmall;
-		nid.uID		= kTrayIconId;
-		nid.uCallbackMessage	= WM_TRAYICONNOTIFY;
-		::_tcscpy_s(nid.szTip, APP_NAME);
-		if (::Shell_NotifyIcon(NIM_ADD, &nid) == FALSE && ::GetLastError() == ERROR_TIMEOUT) {
-			do {
-				::Sleep(1000);
-				if (::Shell_NotifyIcon(NIM_MODIFY, &nid))
-					break;	// success
-			} while (::Shell_NotifyIcon(NIM_ADD, &nid) == FALSE);
-		}
-	}
+	_CreateTasktrayIcon();
 
 	std::ifstream fs(Misc::GetExeDirectory() + _T("settings.ini"));
 	if (fs) {
@@ -133,7 +157,11 @@ LRESULT CMainDlg::OnInitDialog(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam
 		CenterWindow();
 	}
 
-	m_logView.Create(m_hWnd);
+	m_threadLogView = std::thread([this]() {
+		m_logView.Create(m_hWnd);
+		CMessageLoop loop;
+		loop.Run();
+	});
 
 	m_wndLogButton.SubclassWindow(GetDlgItem(IDC_BUTTON_SHOWLOGWINDOW));
 
@@ -168,6 +196,9 @@ LRESULT CMainDlg::OnDestroy(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/,
 
 	_SaveMainDlgWindowPos();
 
+	m_logView.PostMessage(CLogViewWindow::WM_EXECDESTROYWINDOW);
+	m_threadLogView.join();
+
 	return 0;
 }
 
@@ -199,6 +230,13 @@ void	CMainDlg::OnEndSession(BOOL bEnding, UINT uLogOff)
 		m_bVisibleOnDestroy	= IsWindowVisible() != 0;
 		_SaveMainDlgWindowPos();
 	}
+}
+
+// タスクトレイアイコンを再作成する
+LRESULT CMainDlg::OnTaskbarCreated(UINT /*uMsg*/, WPARAM /*wParam*/, LPARAM /*lParam*/, BOOL& /*bHandled*/)
+{
+	_CreateTasktrayIcon();
+	return 0;
 }
 
 LRESULT CMainDlg::OnAppAbout(WORD /*wNotifyCode*/, WORD /*wID*/, HWND /*hWndCtl*/, BOOL& /*bHandled*/)
@@ -322,6 +360,7 @@ LRESULT CMainDlg::OnTrayIconNotify(UINT /*uMsg*/, WPARAM wParam, LPARAM lParam, 
 		case kBypass:
 			CSettings::s_bypass = !CSettings::s_bypass;
 			DoDataExchange(DDX_LOAD, IDC_CHECK_BYPASS);
+			_ChangeTasttrayIcon();
 			break;
 
 		case kUseRemoteProxy:
@@ -376,6 +415,9 @@ LRESULT CMainDlg::OnShowOption(WORD /*wNotifyCode*/, WORD wID, HWND /*hWndCtl*/,
 LRESULT CMainDlg::OnFilterButtonCheck(WORD /*wNotifyCode*/, WORD wID, HWND /*hWndCtl*/, BOOL& /*bHandled*/)
 {
 	DoDataExchange(DDX_SAVE, wID);
+	if (wID == IDC_CHECK_BYPASS) {
+		_ChangeTasttrayIcon();
+	}
 	return 0;
 }
 

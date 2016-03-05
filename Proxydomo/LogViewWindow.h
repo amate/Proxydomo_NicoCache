@@ -45,7 +45,10 @@ class CLogViewWindow :
 public:
 	enum { IDD = IDD_LOGVIEW };
 
-	enum { WM_APPENDTEXT = WM_APP + 100 };
+	enum { 
+		WM_APPENDTEXT = WM_APP + 100,
+		WM_EXECDESTROYWINDOW = WM_APP + 101,
+	};
 
 	CLogViewWindow();
 	~CLogViewWindow();
@@ -100,6 +103,7 @@ public:
 	BEGIN_MSG_MAP_EX( CLogViewWindow )
 		MSG_WM_INITDIALOG( OnInitDialog )
 		MSG_WM_DESTROY( OnDestroy )
+		MESSAGE_HANDLER_EX(WM_EXECDESTROYWINDOW, OnExecDestroyWindow)
 
 		COMMAND_ID_HANDLER_EX( IDCANCEL, OnCancel )
 		COMMAND_ID_HANDLER_EX(IDC_BUTTON_CLEAR, OnClear)
@@ -130,6 +134,11 @@ public:
 
 	BOOL OnInitDialog(CWindow wndFocus, LPARAM lInitParam);
 	void OnDestroy();
+
+	LRESULT OnExecDestroyWindow(UINT uMsg, WPARAM wParam, LPARAM lParam) {
+		DestroyWindow();
+		return 0;
+	}
 
 	void OnCancel(UINT uNotifyCode, int nID, CWindow wndCtl);
 	void OnClear(UINT uNotifyCode, int nID, CWindow wndCtl);

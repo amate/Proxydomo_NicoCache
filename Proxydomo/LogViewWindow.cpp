@@ -518,6 +518,8 @@ void CLogViewWindow::OnDestroy()
 	pt.put("LogWindow.ViewPostData"		, m_bViewPostData);
 
 	write_ini(settingsPath, pt);
+
+	PostQuitMessage(0);
 }
 
 // ShowWindow‚Æ‘Î‚É‚È‚éŠÖ”

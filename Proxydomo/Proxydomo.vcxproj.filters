@@ -22,6 +22,9 @@
     <Filter Include="Header Files\MediaInfo">
       <UniqueIdentifier>{db8238e7-b688-4827-95ba-41277f9ab3a1}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\Test">
+      <UniqueIdentifier>{2fcd1ce1-7070-49e9-9ab4-d7d2bd71f0ad}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -194,6 +197,9 @@
     </ClCompile>
     <ClCompile Include="ssl.cpp">
       <Filter>Header Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Test.cpp">
+      <Filter>Header Files\Test</Filter>
     </ClCompile>
     <ClCompile Include="TransactionView.cpp">
       <Filter>Header Files\Window</Filter>
@@ -472,6 +478,12 @@
       <Filter>Resource Files</Filter>
     </Image>
     <Image Include="res\WebFilter.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="res\Proxydomo_bypass.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="res\icon1.ico">
       <Filter>Resource Files</Filter>
     </Image>
   </ItemGroup>

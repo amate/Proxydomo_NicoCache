@@ -77,9 +77,16 @@ void CUrl::parseUrl(const wstring& str) {
             } else if (CUtil::noCaseBeginsWith(L"dbug.", begin)) {
                 debug = true;
                 pos1 += 5;
-            } else if (CUtil::noCaseBeginsWith(L"src.", begin)) {
-                source = true;
-                pos1 += 4;
+			} else if (CUtil::noCaseBeginsWith(L"src.", begin)) {
+				source = true;
+				debug = true;
+				pos1 += 4;
+			} else if (CUtil::noCaseBeginsWith(L"https.", begin)) {
+				if (protocol != L"https") {
+					https = true;
+					protocol = L"https";
+				}
+				pos1 += 6;
             } else {
 				if (foundUrlCmd)
 					pos1 -= CSettings::s_urlCommandPrefix.length();
@@ -103,8 +110,16 @@ void CUrl::parseUrl(const wstring& str) {
     afterhost = str.substr(pos2);
     host      = str.substr(pos1, pos2 - pos1);
 	hostport = host;
-	if (hostport.find(L":") == string::npos)
-		hostport += L':' + protocol;
+	if (hostport.find(L":") == string::npos) {
+		if (protocol == L"http") {
+			hostport += L":80";
+		} else if (protocol == L"https") {
+			hostport += L":443";
+		} else {
+			hostport += L':' + protocol;
+		}
+	}
+	// hostにポート番号が書かれてる場合、プロトコルデフォルトのポートなら省略する
 	size_t pos5 = host.find(L':');
 	if (pos5 != string::npos) {
 		wstring port = host.substr(pos5 + 1);
@@ -117,5 +132,8 @@ void CUrl::parseUrl(const wstring& str) {
     path      = str.substr(pos2, pos3 - pos2);
     query     = str.substr(pos3, pos4 - pos3);
     anchor    = str.substr(pos4);
+
+	url = protocol + L"://" + host + afterhost;
+	fromhost = host + afterhost;
 }
 // vi:ts=4:sw=4:et

@@ -20,7 +20,6 @@ Thumbs.db
 *.log
 [Bb]in
 [Dd]ebug*/
-*.lib
 *.sbr
 *.opensdf
 *.sdf
@@ -40,9 +39,11 @@ srell/
 GnuTLS*/
 mingw/
 wolfssl/
-
+packages/
 libmediainfo*/
 sinku*/
+Test/
+Proxydomo/Test/
 wolfssl/
 packages/
 
